@@ -325,7 +325,19 @@ export const StudentManagement: React.FC = () => {
                       <td className="p-3 text-slate-600">
                         {st.grade} - <span className="font-semibold">فصل {st.classNumber}</span>
                       </td>
-                      <td className="p-3 font-mono text-slate-700">{st.parentPhone}</td>
+                      <td className="p-3 font-mono text-slate-700">
+                        <div className="flex items-center gap-1.5">
+                          <span>{st.parentPhone}</span>
+                          {(() => {
+                            const siblingsCount = students.filter(other => other.parentPhone === st.parentPhone).length;
+                            return siblingsCount > 1 ? (
+                              <span className="text-[10px] font-sans font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800" title="مرتبطون بحساب ولي أمر واحد">
+                                أخوة ({siblingsCount})
+                              </span>
+                            ) : null;
+                          })()}
+                        </div>
+                      </td>
                       <td className="p-3">
                         <span
                           className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
