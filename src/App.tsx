@@ -14,9 +14,18 @@ import { TeacherDashboard } from './components/teacher/TeacherDashboard';
 import { ParentDashboard } from './components/parent/ParentDashboard';
 
 export default function App() {
-  // Initialize sample seed data once on first mount (GEN-07)
+  const [, setSyncTick] = useState(0);
+
+  // Initialize sample seed data once on first mount and start Firestore cloud sync
   useEffect(() => {
     storage.initializeSeedData();
+    const unsubscribe = storage.startCloudSync();
+    const handleSync = () => setSyncTick(t => t + 1);
+    window.addEventListener('nps_cloud_sync', handleSync);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('nps_cloud_sync', handleSync);
+    };
   }, []);
 
   const [currentUser, setCurrentUser] = useState<User | null>(() => {

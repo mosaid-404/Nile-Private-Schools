@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "StoreDocument": {
+      "title": "StoreDocument",
+      "description": "Serialized application state collection document synced across devices.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string",
+          "description": "JSON-serialized array or object for the corresponding storage key."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of the last update."
+        }
+      },
+      "required": ["value", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/nps_store/{key}": {
+      "schema": { "$ref": "#/entities/StoreDocument" },
+      "description": "Shared school data store synced across admin, teachers, and parents."
+    }
+  }
+}

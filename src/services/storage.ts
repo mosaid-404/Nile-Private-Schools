@@ -1,3 +1,5 @@
+import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { db } from '../firebase';
 import {
   User,
   Student,
@@ -119,12 +121,84 @@ class StorageService {
     }
   }
 
+  private isSyncingFromCloud = false;
+
   private set<T>(key: string, value: T): void {
     try {
-      localStorage.setItem(key, JSON.stringify(value));
+      const serialized = JSON.stringify(value);
+      localStorage.setItem(key, serialized);
+
+      const localOnlyKeys: string[] = [
+        STORAGE_KEYS.CURRENT_USER,
+        STORAGE_KEYS.LOGIN_ATTEMPTS,
+        STORAGE_KEYS.OFFLINE_QUEUE,
+        STORAGE_KEYS.INITIALIZED
+      ];
+      if (!this.isSyncingFromCloud && !localOnlyKeys.includes(key)) {
+        setDoc(doc(db, 'nps_store', key), {
+          value: serialized,
+          updatedAt: new Date().toISOString()
+        }).catch((err) => {
+          console.error(`Firestore sync error for "${key}":`, err);
+        });
+      }
     } catch (e) {
       console.error(`Error saving to localStorage key "${key}":`, e);
     }
+  }
+
+  public startCloudSync(): () => void {
+    const syncKeys = Object.values(STORAGE_KEYS).filter(
+      (k) =>
+        k !== STORAGE_KEYS.CURRENT_USER &&
+        k !== STORAGE_KEYS.LOGIN_ATTEMPTS &&
+        k !== STORAGE_KEYS.OFFLINE_QUEUE &&
+        k !== STORAGE_KEYS.INITIALIZED
+    );
+
+    const unsubscribe = onSnapshot(
+      collection(db, 'nps_store'),
+      (snapshot) => {
+        if (snapshot.empty) {
+          // Push initial local seed data to Firestore
+          syncKeys.forEach((key) => {
+            const localVal = localStorage.getItem(key);
+            if (localVal) {
+              setDoc(doc(db, 'nps_store', key), {
+                value: localVal,
+                updatedAt: new Date().toISOString()
+              }).catch(() => {});
+            }
+          });
+          return;
+        }
+
+        let changed = false;
+        this.isSyncingFromCloud = true;
+        try {
+          snapshot.docs.forEach((docSnap) => {
+            const key = docSnap.id;
+            const cloudVal = docSnap.data()?.value;
+            if (typeof cloudVal === 'string' && localStorage.getItem(key) !== cloudVal) {
+              localStorage.setItem(key, cloudVal);
+              changed = true;
+            }
+          });
+        } finally {
+          this.isSyncingFromCloud = false;
+        }
+
+        if (changed) {
+          window.dispatchEvent(new Event('nps_cloud_sync'));
+          window.dispatchEvent(new Event('nps_settings_updated'));
+        }
+      },
+      (error) => {
+        console.error('Firestore onSnapshot error:', error);
+      }
+    );
+
+    return unsubscribe;
   }
 
   // Initialize Seed Data (GEN-07)
