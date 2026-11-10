@@ -1,0 +1,6 @@
+{
+  "name": "نظام إدارة مدارس النيل الخاصة للغات - NPS",
+  "description": "نظام متكامل لإدارة الحضور والغياب، الطلاب والمعلمين، الإشعارات الفورية لأولياء الأمور، والرسوم والإيصالات الإلكترونية كـ PWA مع دعم العمل دون اتصال.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

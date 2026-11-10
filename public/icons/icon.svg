@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1F4E8C" />
+      <stop offset="100%" stop-color="#163A6B" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F6D365" />
+      <stop offset="100%" stop-color="#FDA085" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- Background rounded rectangle -->
+  <rect width="512" height="512" rx="108" fill="url(#bgGrad)" />
+
+  <!-- Inner crest circular border -->
+  <circle cx="256" cy="256" r="210" fill="none" stroke="#FFFFFF" stroke-opacity="0.15" stroke-width="4" stroke-dasharray="8 6" />
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="2" />
+
+  <!-- Emblem Group with Shadow -->
+  <g filter="url(#shadow)">
+    <!-- Open Book / Wings of knowledge -->
+    <path d="M 160 310 C 200 295 240 310 256 325 C 272 310 312 295 352 310 C 352 230 312 215 256 230 C 200 215 160 230 160 310 Z" fill="#FFFFFF" fill-opacity="0.95" />
+    <path d="M 256 230 L 256 325" stroke="#1F4E8C" stroke-width="4" stroke-linecap="round" />
+
+    <!-- Nile Wave Accents in Book base -->
+    <path d="M 175 290 Q 215 278 250 292" fill="none" stroke="#1F4E8C" stroke-width="3" stroke-linecap="round" />
+    <path d="M 337 290 Q 297 278 262 292" fill="none" stroke="#1F4E8C" stroke-width="3" stroke-linecap="round" />
+
+    <!-- Graduation Cap / Scholar Icon -->
+    <path d="M 256 145 L 360 195 L 256 245 L 152 195 Z" fill="#F4C152" />
+    <path d="M 256 145 L 360 195 L 256 205 L 152 195 Z" fill="#FFE58F" opacity="0.6" />
+    <path d="M 200 218 L 200 255 C 200 275 312 275 312 255 L 312 218 L 256 245 Z" fill="#D4991A" />
+    <!-- Tassel -->
+    <path d="M 330 205 L 340 260 C 340 268 348 268 348 260 L 334 205" fill="#FFFFFF" opacity="0.9" />
+  </g>
+
+  <!-- Typography: NPS -->
+  <text x="256" y="388" font-family="'Cairo', Arial, sans-serif" font-weight="900" font-size="52" fill="#FFFFFF" letter-spacing="4" text-anchor="middle">NPS</text>
+  <text x="256" y="424" font-family="'Cairo', Arial, sans-serif" font-weight="600" font-size="19" fill="#E8F0FA" letter-spacing="1" text-anchor="middle">مدارس النيل الخاصة</text>
+</svg>
