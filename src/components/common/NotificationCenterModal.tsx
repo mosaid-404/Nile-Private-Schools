@@ -28,14 +28,22 @@ export const NotificationCenterModal: React.FC<Props> = ({
   if (!isOpen) return null;
 
   // Filter for current user's role/phone
-  const userNotifications = notifications.filter(n => {
+  const rawUserNotifications = notifications.filter(n => {
     if (currentUser.role === 'owner') return true; // Owner sees all
     if (currentUser.role === 'parent') {
-      return n.recipientPhone === currentUser.phone || n.recipientRole === 'parent';
+      return n.recipientPhone === currentUser.phone;
     }
     if (currentUser.role === 'teacher') {
-      return n.recipientRole === 'teacher';
+      return n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === 'teacher');
     }
+    return true;
+  });
+
+  const seenKeys = new Set<string>();
+  const userNotifications = rawUserNotifications.filter(n => {
+    const key = `${n.title}|${n.body}|${(n.createdAt || '').substring(0, 16)}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
     return true;
   });
 

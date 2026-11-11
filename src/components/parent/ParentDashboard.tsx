@@ -50,7 +50,7 @@ export const ParentDashboard: React.FC<Props> = ({
   const sessions = storage.getSessions();
   const groups = storage.getGroups();
   const notifications = storage.getNotifications().filter(
-    n => n.recipientPhone === currentUser.phone || n.recipientRole === 'parent'
+    n => n.recipientPhone === currentUser.phone
   );
 
   // Calculate monthly stats for a child

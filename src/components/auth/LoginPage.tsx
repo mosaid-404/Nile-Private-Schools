@@ -215,40 +215,6 @@ export const LoginPage: React.FC<Props> = ({ onLoginSuccess }) => {
           </div>
         </form>
 
-        {/* Quick Demo Accounts Helper for reviewers */}
-        <div className="bg-slate-50/80 px-6 py-4 border-t border-slate-100">
-          <p className="text-[11px] font-bold text-slate-500 text-center mb-2.5">
-            تجربة فورية للحسابات التجريبية (اضغط للتعبئة السريعة):
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() => selectDemoUser('owner')}
-              className="p-2 rounded-lg bg-white border border-slate-200 hover:border-indigo-400 text-slate-700 text-right hover:bg-indigo-50/50 transition"
-            >
-              <div className="font-bold text-indigo-700">المالك / المدير</div>
-              <div className="text-[10px] text-slate-400">admin / admin123</div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => selectDemoUser('teacher')}
-              className="p-2 rounded-lg bg-white border border-slate-200 hover:border-emerald-400 text-slate-700 text-right hover:bg-emerald-50/50 transition"
-            >
-              <div className="font-bold text-emerald-700">المعلم (أ. أحمد)</div>
-              <div className="text-[10px] text-slate-400">T001 / tch12345</div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => selectDemoUser('parent')}
-              className="p-2 rounded-lg bg-white border border-slate-200 hover:border-amber-400 text-slate-700 text-right hover:bg-amber-50/50 transition"
-            >
-              <div className="font-bold text-amber-700">ولي الأمر</div>
-              <div className="text-[10px] text-slate-400">01012345678</div>
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* PWA Modal */}

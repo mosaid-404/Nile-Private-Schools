@@ -207,205 +207,37 @@ class StorageService {
       return;
     }
 
-    const today = getTodayDateString();
-
     // 1. Settings
     this.set(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
 
-    // 2. Initial Owner Account
+    // 2. Initial Owner / Admin Account only
     const initialOwner: User = {
       id: 'usr_owner_1',
       username: 'admin',
-      displayName: 'الأستاذ أحمد فؤاد (المالك / المدير)',
+      displayName: 'مدير النظام (الإدارة)',
       role: 'owner',
       status: 'active',
-      passwordHash: 'admin123', // required to change on first login
-      mustChangePassword: true,
-      phone: '01012345678',
-      createdAt: new Date().toISOString()
-    };
-
-    // 3. Secretary Account
-    const initialSecretary: User = {
-      id: 'usr_sec_1',
-      username: 'accountant',
-      displayName: 'أ. مروة الشاذلي (الحسابات)',
-      role: 'secretary',
-      status: 'active',
-      passwordHash: 'sec123',
+      passwordHash: 'admin123',
       mustChangePassword: false,
-      phone: '01099887766',
+      phone: '01000000000',
       createdAt: new Date().toISOString()
     };
 
-    // 4. Teachers
-    const teachersList: Teacher[] = [
-      { id: 'tch_1', name: 'أ. أحمد محمود سالم', subject: 'لغة عربية', phone: '01122334455', userId: 'usr_tch_1', status: 'active', createdAt: new Date().toISOString() },
-      { id: 'tch_2', name: 'أ. منى عبد الله', subject: 'لغة إنجليزية', phone: '01233445566', userId: 'usr_tch_2', status: 'active', createdAt: new Date().toISOString() },
-      { id: 'tch_3', name: 'أ. شريف توفيق عزمي', subject: 'رياضيات', phone: '01044556677', userId: 'usr_tch_3', status: 'active', createdAt: new Date().toISOString() },
-      { id: 'tch_4', name: 'أ. رانيا سامي فهمي', subject: 'علوم', phone: '01555667788', userId: 'usr_tch_4', status: 'active', createdAt: new Date().toISOString() }
-    ];
-
-    const teacherUsers: User[] = [
-      { id: 'usr_tch_1', username: 'T001', displayName: 'أ. أحمد محمود سالم', role: 'teacher', status: 'active', passwordHash: 'tch12345', mustChangePassword: false, relatedId: 'tch_1', createdAt: new Date().toISOString() },
-      { id: 'usr_tch_2', username: 'T002', displayName: 'أ. منى عبد الله', role: 'teacher', status: 'active', passwordHash: 'tch12345', mustChangePassword: false, relatedId: 'tch_2', createdAt: new Date().toISOString() },
-      { id: 'usr_tch_3', username: 'T003', displayName: 'أ. شريف توفيق عزمي', role: 'teacher', status: 'active', passwordHash: 'tch12345', mustChangePassword: false, relatedId: 'tch_3', createdAt: new Date().toISOString() },
-      { id: 'usr_tch_4', username: 'T004', displayName: 'أ. رانيا سامي فهمي', role: 'teacher', status: 'active', passwordHash: 'tch12345', mustChangePassword: false, relatedId: 'tch_4', createdAt: new Date().toISOString() }
-    ];
-
-    // 5. Classes
-    const classesList: SchoolClass[] = [
-      { id: 'cls_4_3', grade: 'الصف الرابع الابتدائي', classNumber: 3 },
-      { id: 'cls_4_1', grade: 'الصف الرابع الابتدائي', classNumber: 1 },
-      { id: 'cls_1_prep_1', grade: 'الصف الأول الإعدادي', classNumber: 1 },
-      { id: 'cls_2_prep_2', grade: 'الصف الثاني الإعدادي', classNumber: 2 }
-    ];
-
-    // 6. Parents & Students (Including brothers test case PAR-04: Mohamed Ahmed Ali & Omar Ahmed Ali)
-    const parentPhone1 = '01012345678';
-    const parentPhone2 = '01198765432';
-    const parentPhone3 = '01245678901';
-
-    const parentsList: Parent[] = [
-      { id: 'prt_1', displayName: 'ولي أمر الطالب محمد أحمد علي', phone: parentPhone1, userId: 'usr_prt_1', studentIds: ['stu_1', 'stu_3'], createdAt: new Date().toISOString() },
-      { id: 'prt_2', displayName: 'ولي أمر الطالبة سارة خالد حسن', phone: parentPhone2, userId: 'usr_prt_2', studentIds: ['stu_2'], createdAt: new Date().toISOString() },
-      { id: 'prt_3', displayName: 'ولي أمر الطالب يوسف كريم إبراهيم', phone: parentPhone3, userId: 'usr_prt_3', studentIds: ['stu_4'], createdAt: new Date().toISOString() }
-    ];
-
-    const parentUsers: User[] = [
-      { id: 'usr_prt_1', username: parentPhone1, displayName: 'ولي أمر الطالب محمد أحمد علي', role: 'parent', status: 'active', passwordHash: parentPhone1, mustChangePassword: false, phone: parentPhone1, relatedId: 'prt_1', createdAt: new Date().toISOString() },
-      { id: 'usr_prt_2', username: parentPhone2, displayName: 'ولي أمر الطالبة سارة خالد حسن', role: 'parent', status: 'active', passwordHash: parentPhone2, mustChangePassword: false, phone: parentPhone2, relatedId: 'prt_2', createdAt: new Date().toISOString() },
-      { id: 'usr_prt_3', username: parentPhone3, displayName: 'ولي أمر الطالب يوسف كريم إبراهيم', role: 'parent', status: 'active', passwordHash: parentPhone3, mustChangePassword: false, phone: parentPhone3, relatedId: 'prt_3', createdAt: new Date().toISOString() }
-    ];
-
-    const studentsList: Student[] = [
-      { id: 'stu_1', code: '1001', name: 'محمد أحمد علي', grade: 'الصف الرابع الابتدائي', classNumber: 3, parentPhone: parentPhone1, parentId: 'prt_1', status: 'active', createdAt: new Date().toISOString() },
-      { id: 'stu_2', code: '1002', name: 'سارة خالد حسن', grade: 'الصف الأول الإعدادي', classNumber: 1, parentPhone: parentPhone2, parentId: 'prt_2', status: 'active', createdAt: new Date().toISOString() },
-      { id: 'stu_3', code: '1003', name: 'عمر أحمد علي', grade: 'الصف الأول الإعدادي', classNumber: 1, parentPhone: parentPhone1, parentId: 'prt_1', status: 'active', createdAt: new Date().toISOString() }, // Brother of Mohamed
-      { id: 'stu_4', code: '1004', name: 'يوسف كريم إبراهيم', grade: 'الصف الرابع الابتدائي', classNumber: 3, parentPhone: parentPhone3, parentId: 'prt_3', status: 'active', createdAt: new Date().toISOString() },
-      { id: 'stu_5', code: '1005', name: 'مريم طارق الشافعي', grade: 'الصف الرابع الابتدائي', classNumber: 3, parentPhone: '01511223344', parentId: 'prt_1', status: 'active', createdAt: new Date().toISOString() },
-      { id: 'stu_6', code: '1006', name: 'حمزة مصطفى رضوان', grade: 'الصف الرابع الابتدائي', classNumber: 3, parentPhone: '01066778899', parentId: 'prt_1', status: 'active', createdAt: new Date().toISOString() }
-    ];
-
-    // 7. Groups
-    const groupsList: Group[] = [
-      { id: 'grp_1', name: 'لغة عربية - 4/3', subject: 'لغة عربية', teacherId: 'tch_1', mode: 'class', classIds: ['cls_4_3'], studentIds: ['stu_1', 'stu_4', 'stu_5', 'stu_6'] },
-      { id: 'grp_2', name: 'رياضيات - 4/3', subject: 'رياضيات', teacherId: 'tch_3', mode: 'class', classIds: ['cls_4_3'], studentIds: ['stu_1', 'stu_4', 'stu_5', 'stu_6'] },
-      { id: 'grp_3', name: 'لغة إنجليزية - 1 إعدادي', subject: 'لغة إنجليزية', teacherId: 'tch_2', mode: 'class', classIds: ['cls_1_prep_1'], studentIds: ['stu_2', 'stu_3'] },
-      { id: 'grp_4', name: 'مجموعة تقوية علوم خاصة', subject: 'علوم', teacherId: 'tch_4', mode: 'manual', studentIds: ['stu_1', 'stu_2'] }
-    ];
-
-    // 8. Schedule Slots
-    // Day of week: today's day number in Cairo (0=Saturday ... 6=Friday)
-    const currentDayOfWeek = (new Date().getDay() + 1) % 7; // Map JS Sunday(0) -> 1, Saturday(6) -> 0
-
-    const scheduleSlotsList: ScheduleSlot[] = [
-      { id: 'slot_1', groupId: 'grp_1', dayOfWeek: currentDayOfWeek, startTime: '08:30', endTime: '09:45', room: 'قاعة 101' },
-      { id: 'slot_2', groupId: 'grp_2', dayOfWeek: currentDayOfWeek, startTime: '10:00', endTime: '11:15', room: 'قاعة 102' },
-      { id: 'slot_3', groupId: 'grp_3', dayOfWeek: currentDayOfWeek, startTime: '11:30', endTime: '12:45', room: 'معمل اللغات' },
-      { id: 'slot_4', groupId: 'grp_4', dayOfWeek: (currentDayOfWeek + 1) % 7, startTime: '14:00', endTime: '15:30', room: 'معمل العلوم' }
-    ];
-
-    // 9. Session Instances for Today
-    const sessionInstances: SessionInstance[] = [
-      { id: 'ses_1', scheduleSlotId: 'slot_1', groupId: 'grp_1', date: today, status: 'recorded', recordedAt: new Date(Date.now() - 3600000).toISOString(), recordedBy: 'أ. أحمد محمود سالم' },
-      { id: 'ses_2', scheduleSlotId: 'slot_2', groupId: 'grp_2', date: today, status: 'scheduled' },
-      { id: 'ses_3', scheduleSlotId: 'slot_3', groupId: 'grp_3', date: today, status: 'scheduled' }
-    ];
-
-    // 10. Attendance Records for ses_1
-    const attendanceRecords: AttendanceRecord[] = [
-      { id: 'att_1', sessionId: 'ses_1', studentId: 'stu_1', status: 'present', recordedAt: new Date(Date.now() - 3600000).toISOString(), recordedBy: 'أ. أحمد محمود سالم' },
-      { id: 'att_2', sessionId: 'ses_1', studentId: 'stu_4', status: 'absent', note: 'وعكة صحية', recordedAt: new Date(Date.now() - 3600000).toISOString(), recordedBy: 'أ. أحمد محمود سالم' },
-      { id: 'att_3', sessionId: 'ses_1', studentId: 'stu_5', status: 'present', recordedAt: new Date(Date.now() - 3600000).toISOString(), recordedBy: 'أ. أحمد محمود سالم' },
-      { id: 'att_4', sessionId: 'ses_1', studentId: 'stu_6', status: 'present', recordedAt: new Date(Date.now() - 3600000).toISOString(), recordedBy: 'أ. أحمد محمود سالم' }
-    ];
-
-    // 11. Initial Notifications
-    const initialNotifications: AppNotification[] = [
-      {
-        id: 'notif_1',
-        recipientPhone: parentPhone3,
-        recipientRole: 'parent',
-        title: 'تنبيه غياب',
-        body: `تغيّب الطالب يوسف كريم إبراهيم عن حصة لغة عربية اليوم ${today} الساعة 08:30 ص.`,
-        url: '/#parent-children',
-        type: 'absence',
-        studentId: 'stu_4',
-        status: 'sent',
-        isRead: false,
-        createdAt: new Date(Date.now() - 3500000).toISOString()
-      }
-    ];
-
-    // 12. Fee Plans & Invoices & Payments & Receipts
-    const feePlansList: FeePlan[] = [
-      { id: 'plan_1', name: 'الاشتراك الشهري للعام الدراسي', type: 'monthly', amount: 800, periodicity: 'شهري', description: 'الاشتراك الشهري العام للخدمات التعليمية والأنشطة' },
-      { id: 'plan_2', name: 'حزمة حصص التقوية المتقدمة', type: 'session', amount: 450, periodicity: 'شهري', description: '8 حصص تقوية مكثفة' },
-      { id: 'plan_3', name: 'المصروفات الدراسية السنوية (القسط الأول)', type: 'annual', amount: 3500, periodicity: 'سنوي', description: 'القسط السنوي الأول' }
-    ];
-
-    const invoicesList: Invoice[] = [
-      { id: 'inv_1', studentId: 'stu_1', feePlanId: 'plan_1', title: 'اشتراك شهر نوفمبر 2026', amount: 800, discount: 0, dueDate: today, paidAmount: 800, remainingAmount: 0, status: 'paid', createdAt: new Date(Date.now() - 86400000 * 5).toISOString() },
-      { id: 'inv_2', studentId: 'stu_2', feePlanId: 'plan_1', title: 'اشتراك شهر نوفمبر 2026', amount: 800, discount: 100, dueDate: today, paidAmount: 400, remainingAmount: 300, status: 'partial', createdAt: new Date(Date.now() - 86400000 * 5).toISOString() },
-      { id: 'inv_3', studentId: 'stu_3', feePlanId: 'plan_1', title: 'اشتراك شهر نوفمبر 2026 (خصم الإخوة)', amount: 800, discount: 150, dueDate: today, paidAmount: 0, remainingAmount: 650, status: 'unpaid', createdAt: new Date(Date.now() - 86400000 * 5).toISOString() },
-      { id: 'inv_4', studentId: 'stu_4', feePlanId: 'plan_1', title: 'اشتراك شهر أكتوبر 2026', amount: 800, discount: 0, dueDate: '2026-10-15', paidAmount: 0, remainingAmount: 800, status: 'overdue', createdAt: new Date(Date.now() - 86400000 * 30).toISOString() }
-    ];
-
-    const receipt1: Receipt = {
-      id: 'rcp_1',
-      serialNumber: 'NPS-2026-000101',
-      paymentId: 'pay_1',
-      invoiceId: 'inv_1',
-      studentId: 'stu_1',
-      amount: 800,
-      totalRequired: 800,
-      totalPaidToDate: 800,
-      remainingBalance: 0,
-      paymentMethod: 'نقداً',
-      feeTitle: 'اشتراك شهر نوفمبر 2026',
-      date: today,
-      issuedBy: 'أ. مروة الشاذلي',
-      status: 'valid'
-    };
-
-    const payment1: Payment = {
-      id: 'pay_1',
-      invoiceId: 'inv_1',
-      studentId: 'stu_1',
-      amount: 800,
-      method: 'cash',
-      date: today,
-      receivedBy: 'أ. مروة الشاذلي',
-      receiptId: 'rcp_1',
-      note: 'سداد كامل الاشتراك'
-    };
-
-    const initialAuditLogs: AuditLog[] = [
-      { id: 'aud_1', userId: 'usr_owner_1', userName: 'الأستاذ أحمد فؤاد', action: 'تهيئة النظام', entity: 'System', entityId: 'sys', details: 'تم تهيئة النظام الأولي بنجاح', timestamp: new Date().toISOString() },
-      { id: 'aud_2', userId: 'usr_sec_1', userName: 'أ. مروة الشاذلي', action: 'إصدار إيصال', entity: 'Receipt', entityId: 'rcp_1', details: 'إصدار إيصال رقم NPS-2026-000101 بمبلغ 800 ج.م', timestamp: new Date().toISOString() }
-    ];
-
-    const allUsers = [initialOwner, initialSecretary, ...teacherUsers, ...parentUsers];
-
-    this.set(STORAGE_KEYS.USERS, allUsers);
-    this.set(STORAGE_KEYS.TEACHERS, teachersList);
-    this.set(STORAGE_KEYS.CLASSES, classesList);
+    this.set(STORAGE_KEYS.USERS, [initialOwner]);
+    this.set(STORAGE_KEYS.TEACHERS, []);
+    this.set(STORAGE_KEYS.CLASSES, []);
     this.set(STORAGE_KEYS.SUBJECTS, DEFAULT_SETTINGS.subjects.map((name, i) => ({ id: `sbj_${i + 1}`, name })));
-    this.set(STORAGE_KEYS.PARENTS, parentsList);
-    this.set(STORAGE_KEYS.STUDENTS, studentsList);
-    this.set(STORAGE_KEYS.GROUPS, groupsList);
-    this.set(STORAGE_KEYS.SCHEDULE_SLOTS, scheduleSlotsList);
-    this.set(STORAGE_KEYS.SESSIONS, sessionInstances);
-    this.set(STORAGE_KEYS.ATTENDANCE, attendanceRecords);
-    this.set(STORAGE_KEYS.NOTIFICATIONS, initialNotifications);
-    this.set(STORAGE_KEYS.FEE_PLANS, feePlansList);
-    this.set(STORAGE_KEYS.INVOICES, invoicesList);
-    this.set(STORAGE_KEYS.PAYMENTS, [payment1]);
-    this.set(STORAGE_KEYS.RECEIPTS, [receipt1]);
-    this.set(STORAGE_KEYS.AUDIT_LOGS, initialAuditLogs);
-    this.set(STORAGE_KEYS.OFFLINE_QUEUE, []);
-    this.set(STORAGE_KEYS.INITIALIZED, 'true');
+    this.set(STORAGE_KEYS.PARENTS, []);
+    this.set(STORAGE_KEYS.STUDENTS, []);
+    this.set(STORAGE_KEYS.GROUPS, []);
+    this.set(STORAGE_KEYS.SCHEDULE_SLOTS, []);
+    this.set(STORAGE_KEYS.SESSIONS, []);
+    this.set(STORAGE_KEYS.ATTENDANCE, []);
+    this.set(STORAGE_KEYS.NOTIFICATIONS, []);
+    this.set(STORAGE_KEYS.BROADCASTS, []);
+    this.set(STORAGE_KEYS.AUDIT_LOGS, []);
+
+    localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
   }
 
   // Single button delete demo data (GEN-07)
@@ -454,8 +286,8 @@ class StorageService {
   }
 
   public checkLoginLockout(username: string): { isLocked: boolean; remainingMinutes?: number } {
-    const attempts = this.get<Record<string, { count: number; lockedUntil?: number }>>(STORAGE_KEYS.LOGIN_ATTEMPTS, {});
-    const record = attempts[username];
+    const attempts = this.get<Record<string, { count: number; lockedUntil?: number }>>(STORAGE_KEYS.LOGIN_ATTEMPTS, {}) || {};
+    const record = attempts?.[username];
     if (record && record.lockedUntil) {
       const now = Date.now();
       if (now < record.lockedUntil) {
@@ -470,7 +302,7 @@ class StorageService {
   }
 
   public registerFailedLogin(username: string): { isLockedNow: boolean; remainingMinutes?: number } {
-    const attempts = this.get<Record<string, { count: number; lockedUntil?: number }>>(STORAGE_KEYS.LOGIN_ATTEMPTS, {});
+    const attempts = this.get<Record<string, { count: number; lockedUntil?: number }>>(STORAGE_KEYS.LOGIN_ATTEMPTS, {}) || {};
     const record = attempts[username] || { count: 0 };
     record.count += 1;
 
@@ -490,7 +322,7 @@ class StorageService {
   }
 
   public clearFailedLogin(username: string): void {
-    const attempts = this.get<Record<string, { count: number; lockedUntil?: number }>>(STORAGE_KEYS.LOGIN_ATTEMPTS, {});
+    const attempts = this.get<Record<string, { count: number; lockedUntil?: number }>>(STORAGE_KEYS.LOGIN_ATTEMPTS, {}) || {};
     if (attempts[username]) {
       delete attempts[username];
       this.set(STORAGE_KEYS.LOGIN_ATTEMPTS, attempts);
@@ -1172,10 +1004,14 @@ class StorageService {
     }
 
     const recipientsList = Array.from(recipientsMap.values());
+    const uniqueRecipientPhones = new Set<string>();
     const sentCount = recipientsList.length;
 
-    // Dispatch individual app notifications
+    // Dispatch individual app notifications (deduplicated by unique Set)
     for (const recipient of recipientsList) {
+      if (!recipient.phone || uniqueRecipientPhones.has(recipient.phone)) continue;
+      uniqueRecipientPhones.add(recipient.phone);
+
       this.sendPushNotification({
         recipientPhone: recipient.phone,
         recipientRole: recipient.role,

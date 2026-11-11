@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LogOut, Bell, Key, RefreshCw } from 'lucide-react';
+import { LogOut, Bell, Key, RefreshCw, Search } from 'lucide-react';
 import { User } from '../../types';
 import { storage } from '../../services/storage';
 import { NotificationCenterModal } from './NotificationCenterModal';
@@ -24,6 +24,7 @@ export const Header: React.FC<Props> = ({
   const [showNotifications, setShowNotifications] = useState(false);
   const [showChangePass, setShowChangePass] = useState(false);
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
+  const [switchSearch, setSwitchSearch] = useState('');
   const [schoolSettings, setSchoolSettings] = useState(() => storage.getSettings());
 
   useEffect(() => {
@@ -35,10 +36,20 @@ export const Header: React.FC<Props> = ({
   }, []);
 
   const notifications = storage.getNotifications();
+  const seenUnreadKeys = new Set<string>();
   const unreadCount = notifications.filter(n => {
-    if (currentUser.role === 'owner') return !n.isRead;
-    if (currentUser.role === 'parent') return !n.isRead && (n.recipientPhone === currentUser.phone || n.recipientRole === 'parent');
-    return !n.isRead && n.recipientRole === currentUser.role;
+    if (n.isRead) return false;
+    const matchesRole =
+      currentUser.role === 'owner'
+        ? true
+        : currentUser.role === 'parent' || currentUser.role === 'teacher'
+        ? n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === currentUser.role)
+        : n.recipientRole === currentUser.role;
+    if (!matchesRole) return false;
+    const key = `${n.title}|${n.body}|${(n.createdAt || '').substring(0, 16)}`;
+    if (seenUnreadKeys.has(key)) return false;
+    seenUnreadKeys.add(key);
+    return true;
   }).length;
 
   const roleLabels: Record<string, { label: string; bg: string; text: string }> = {
@@ -103,7 +114,7 @@ export const Header: React.FC<Props> = ({
                 </span>
               </div>
 
-              {/* Quick switch role dropdown for demonstration */}
+              {/* Quick switch role dropdown - visible ONLY when logged in as Admin/Owner */}
               {onSwitchUser && (
                 <div className="relative">
                   <button
@@ -116,25 +127,51 @@ export const Header: React.FC<Props> = ({
                   </button>
 
                   {showSwitchMenu && (
-                    <div className="absolute left-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-50 text-right">
+                    <div className="absolute left-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-50 text-right">
                       <p className="px-3 py-1 text-[11px] font-bold text-slate-400 border-b border-slate-100">
-                        تسجيل سريع بأي حساب للتجربة:
+                        التنقل السريع بين الحسابات:
                       </p>
-                      {allUsers.slice(0, 6).map(u => (
-                        <button
-                          key={u.id}
-                          onClick={() => {
-                            setShowSwitchMenu(false);
-                            onSwitchUser(u);
-                          }}
-                          className="w-full px-3 py-2 text-xs flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
-                        >
-                          <span className="font-semibold text-slate-800 truncate max-w-[150px]">{u.displayName}</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                            {roleLabels[u.role]?.label || u.role}
-                          </span>
-                        </button>
-                      ))}
+                      <div className="px-2.5 py-2 border-b border-slate-100">
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={switchSearch}
+                            onChange={(e) => setSwitchSearch(e.target.value)}
+                            placeholder="ابحث بالاسم أو الهاتف أو الكود..."
+                            className="w-full pr-8 pl-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:border-[#1F4E8C] outline-hidden"
+                            autoFocus
+                          />
+                          <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-2" />
+                        </div>
+                      </div>
+                      <div className="max-h-60 overflow-y-auto">
+                        {allUsers
+                          .filter(u => {
+                            const q = switchSearch.trim().toLowerCase();
+                            if (!q) return true;
+                            return (
+                              u.displayName.toLowerCase().includes(q) ||
+                              u.username.toLowerCase().includes(q) ||
+                              (u.phone && u.phone.includes(q))
+                            );
+                          })
+                          .map(u => (
+                            <button
+                              key={u.id}
+                              onClick={() => {
+                                setShowSwitchMenu(false);
+                                setSwitchSearch('');
+                                onSwitchUser(u);
+                              }}
+                              className="w-full px-3 py-2 text-xs flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
+                            >
+                              <span className="font-semibold text-slate-800 truncate max-w-[160px]">{u.displayName}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
+                                {roleLabels[u.role]?.label || u.role}
+                              </span>
+                            </button>
+                          ))}
+                      </div>
                     </div>
                   )}
                 </div>

@@ -32,17 +32,30 @@ export default function App() {
     storage.initializeSeedData();
     return storage.getCurrentUser();
   });
+  const [isAdminSession, setIsAdminSession] = useState<boolean>(() => {
+    const u = storage.getCurrentUser();
+    return u?.role === 'owner' || localStorage.getItem('nps_admin_session') === 'true';
+  });
 
   const [selectedStudentForAttendance, setSelectedStudentForAttendance] = useState<string | undefined>(undefined);
 
   const handleLoginSuccess = (user: User) => {
     storage.setCurrentUser(user);
     setCurrentUser(user);
+    const isAdmin = user.role === 'owner';
+    setIsAdminSession(isAdmin);
+    if (isAdmin) {
+      localStorage.setItem('nps_admin_session', 'true');
+    } else {
+      localStorage.removeItem('nps_admin_session');
+    }
   };
 
   const handleLogout = () => {
     storage.setCurrentUser(null);
     setCurrentUser(null);
+    setIsAdminSession(false);
+    localStorage.removeItem('nps_admin_session');
   };
 
   const handleUserUpdated = (updated: User) => {
@@ -74,7 +87,7 @@ export default function App() {
         onLogout={handleLogout}
         onUserUpdated={handleUserUpdated}
         onNavigateToStudentAttendance={handleNavigateToStudentAttendance}
-        onSwitchUser={handleSwitchUser}
+        onSwitchUser={isAdminSession ? handleSwitchUser : undefined}
       />
 
       {/* Main Role-Specific View (GEN-04 & Section 2.1) */}
