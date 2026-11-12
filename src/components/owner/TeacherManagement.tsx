@@ -86,11 +86,7 @@ export const TeacherManagement: React.FC = () => {
     const user = users.find(u => u.id === teacher.userId);
     if (!user) return;
 
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let tempPassword = '';
-    for (let i = 0; i < 8; i++) {
-      tempPassword += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
+    const tempPassword = 'NPS@1234';
 
     user.passwordHash = tempPassword;
     storage.saveUsers(users);

@@ -157,7 +157,7 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
             <div className="flex items-center justify-between pb-4 mb-4 border-b border-white/15">
               <div>
                 <h2 className="text-sm font-extrabold">القائمة الرئيسية</h2>
-                <p className="text-[11px] text-blue-200">{settings.schoolName}</p>
+                <p className="text-[11px] text-blue-200">{settings.schoolName} • {currentUser.displayName || 'الادمن'}</p>
               </div>
               <button
                 onClick={() => setMobileSidebarOpen(false)}
@@ -175,7 +175,7 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
         {/* Desktop Blue Sidebar */}
         <aside className="hidden lg:flex flex-col w-64 shrink-0 bg-gradient-to-b from-[#1F4E8C] to-[#163A6B] text-white rounded-3xl p-4 shadow-lg sticky top-20 no-print">
           <div className="px-2 pb-3 mb-3 border-b border-white/15">
-            <p className="text-[11px] font-bold text-blue-200">لوحة الإدارة</p>
+            <p className="text-[11px] font-bold text-blue-200">لوحة الإدارة • {currentUser.displayName || 'الادمن'}</p>
             <h2 className="text-sm font-extrabold truncate mt-0.5">{settings.schoolName}</h2>
           </div>
           {renderNavButtons(false)}
@@ -191,7 +191,7 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
           <div className="bg-gradient-to-l from-[#1F4E8C] to-[#163A6B] text-white rounded-3xl p-6 sm:p-8 shadow-md relative overflow-hidden">
             <div className="relative z-10 space-y-2">
               <span className="text-xs font-bold px-3 py-1 rounded-full bg-white/15 text-blue-100">
-                لوحة المالك / الإدارة العامة
+                لوحة الإدارة العامة • مرحباً بك {currentUser.displayName || 'الادمن'}
               </span>
               <h1 className="text-xl sm:text-3xl font-extrabold">
                 {settings.schoolName}

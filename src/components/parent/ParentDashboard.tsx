@@ -78,17 +78,17 @@ export const ParentDashboard: React.FC<Props> = ({
 
   return (
     <div className="max-w-4xl mx-auto px-3 sm:px-6 py-6 pb-24 space-y-6">
-      {/* Top Child Selector if multiple children exist (PRT-06) */}
+      {/* Top Child Selector in grid boxes if multiple children exist */}
       {children.length > 1 && (
-        <div className="bg-white rounded-2xl p-2.5 shadow-xs border border-slate-200 flex items-center justify-between gap-2 overflow-x-auto">
-          <span className="text-xs font-bold text-slate-500 shrink-0 pr-2">اختر الابن:</span>
-          <div className="flex items-center gap-1.5 flex-1">
+        <div className="bg-white rounded-2xl p-3 shadow-xs border border-slate-200 space-y-2">
+          <span className="text-xs font-bold text-slate-500 block">اختر الابن:</span>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
             <button
               onClick={() => setSelectedChildId('all')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-colors ${
+              className={`p-2.5 rounded-xl text-xs font-bold text-center border transition-all ${
                 selectedChildId === 'all'
-                  ? 'bg-[#1F4E8C] text-white shadow-xs'
-                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  ? 'bg-[#1F4E8C] text-white border-[#1F4E8C] shadow-xs'
+                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
               }`}
             >
               الكل ({children.length})
@@ -97,10 +97,10 @@ export const ParentDashboard: React.FC<Props> = ({
               <button
                 key={child.id}
                 onClick={() => setSelectedChildId(child.id)}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-colors ${
+                className={`p-2.5 rounded-xl text-xs font-bold text-center border truncate transition-all ${
                   selectedChildId === child.id
-                    ? 'bg-[#1F4E8C] text-white shadow-xs'
-                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    ? 'bg-[#1F4E8C] text-white border-[#1F4E8C] shadow-xs'
+                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                 }`}
               >
                 {child.name}
@@ -118,72 +118,55 @@ export const ParentDashboard: React.FC<Props> = ({
             const childRecords = attendanceRecords.filter(a => a.studentId === child.id);
 
             return (
-              <div key={child.id} className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
+              <div key={child.id} className="bg-white rounded-3xl shadow-md shadow-slate-200/60 border border-slate-200/80 overflow-hidden">
                 {/* Child Header Card (PRT-01) */}
-                <div className="bg-gradient-to-l from-slate-50 to-blue-50/40 p-5 sm:p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="bg-gradient-to-l from-[#1F4E8C] to-[#163A6B] text-white p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div className="flex items-center gap-4">
-                    <div className="w-14 h-14 rounded-2xl bg-[#1F4E8C] text-white flex items-center justify-center font-bold text-xl shadow-md shadow-blue-900/10">
+                    <div className="w-14 h-14 rounded-2xl bg-white/15 backdrop-blur-xs border border-white/20 text-white flex items-center justify-center font-extrabold text-xl shadow-inner shrink-0">
                       {child.name.charAt(0)}
                     </div>
                     <div>
-                      <div className="flex items-center gap-2">
-                        <h2 className="text-lg sm:text-xl font-extrabold text-slate-900">{child.name}</h2>
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-lg sm:text-xl font-extrabold text-white">{child.name}</h2>
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-white/20 text-blue-50">
                           كود: {child.code}
                         </span>
                       </div>
-                      <p className="text-xs text-slate-600 mt-1">
+                      <p className="text-xs text-blue-100 mt-1 font-medium">
                         {child.grade} • فصل {child.classNumber}
                       </p>
                     </div>
                   </div>
 
-                  {/* Today's Status Badge & Rate (PRT-01) */}
-                  <div className="flex items-center gap-3">
-                    {/* Today's state */}
-                    <div className="text-center sm:text-left">
-                      <div className="text-[10px] text-slate-400 font-bold mb-0.5">حالة اليوم</div>
-                      {stats.todayStatus === 'present' ? (
-                        <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>حاضر اليوم</span>
-                        </span>
-                      ) : stats.todayStatus === 'absent' ? (
-                        <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-rose-100 text-rose-800 text-xs font-bold animate-pulse">
-                          <XCircle className="w-3.5 h-3.5" />
-                          <span>غائب اليوم</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold">
-                          <span>لا توجد حصص</span>
-                        </span>
-                      )}
-                    </div>
+                </div>
 
-                    {/* Attendance percentage gauge */}
-                    <div className="bg-white border border-slate-200 p-2.5 rounded-2xl text-center min-w-[70px] shadow-2xs">
-                      <span className="text-xs text-slate-400 block font-semibold">الحضور</span>
-                      <strong className={`text-base font-extrabold ${stats.rate >= 85 ? 'text-emerald-600' : stats.rate >= 70 ? 'text-amber-600' : 'text-rose-600'}`}>
-                        {stats.rate}%
-                      </strong>
-                    </div>
+                {/* Quick Summary Strip */}
+                <div className="grid grid-cols-3 divide-x divide-x-reverse divide-slate-100 bg-slate-50/70 border-b border-slate-100 text-center py-3">
+                  <div>
+                    <span className="text-[11px] text-slate-500 block">إجمالي الحصص</span>
+                    <strong className="text-sm font-extrabold text-slate-800">{stats.total}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-emerald-700 block">أيام الحضور</span>
+                    <strong className="text-sm font-extrabold text-emerald-700">{stats.present}</strong>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-rose-700 block">أيام الغياب</span>
+                    <strong className="text-sm font-extrabold text-rose-700">{stats.absent}</strong>
                   </div>
                 </div>
 
                 {/* Attendance Log (PRT-02) */}
-                <div className="p-5 space-y-4">
+                <div className="p-4 sm:p-5 space-y-3.5">
                   <div className="flex items-center justify-between">
                     <h3 className="font-bold text-sm text-slate-800 flex items-center gap-2">
                       <Clock className="w-4 h-4 text-[#1F4E8C]" />
                       <span>سجل الحضور الزمني للحصص الدراسية</span>
                     </h3>
-                    <div className="text-xs text-slate-500">
-                      حضور: <strong className="text-emerald-700">{stats.present}</strong> • غياب: <strong className="text-rose-700">{stats.absent}</strong>
-                    </div>
                   </div>
 
                   {childRecords.length === 0 ? (
-                    <p className="text-xs text-slate-400 text-center py-8">
+                    <p className="text-xs text-slate-400 text-center py-8 bg-slate-50 rounded-2xl">
                       لم يتم تسجيل حصص أو رصد حضور لهذا الطالب حتى الآن.
                     </p>
                   ) : (
@@ -191,6 +174,7 @@ export const ParentDashboard: React.FC<Props> = ({
                       {childRecords.map(rec => {
                         const session = sessions.find(s => s.id === rec.sessionId);
                         const grp = session ? groups.find(g => g.id === session.groupId) : null;
+                        const tch = storage.getTeachers().find(t => t.id === grp?.teacherId || t.name === rec.recordedBy);
                         const isPres = rec.status === 'present';
 
                         return (
@@ -204,20 +188,21 @@ export const ParentDashboard: React.FC<Props> = ({
                           >
                             <div className="flex items-center gap-3">
                               <div
-                                className={`w-8 h-8 rounded-xl flex items-center justify-center font-bold ${
+                                className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold shrink-0 ${
                                   isPres
                                     ? 'bg-emerald-500 text-white'
-                                    : 'bg-rose-600 text-white animate-pulse'
+                                    : 'bg-rose-600 text-white'
                                 }`}
                               >
                                 {isPres ? <CheckCircle2 className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
                               </div>
                               <div>
                                 <h4 className="font-bold text-slate-900">
-                                  {grp?.subject || 'حصة دراسية'} ({grp?.name})
+                                  {grp?.subject || tch?.subject || 'حصة دراسية'} {grp?.name ? `(${grp.name})` : ''}
                                 </h4>
                                 <p className="text-[11px] text-slate-500 mt-0.5">
-                                  {session ? formatArabicDate(session.date) : ''} • المعلم: {rec.recordedBy}
+                                  {session ? formatArabicDate(session.date) : formatArabicDate(rec.recordedAt)} • المعلم: {rec.recordedBy}
+                                  {tch?.subject ? ` (${tch.subject})` : ''}
                                 </p>
                                 {rec.note && (
                                   <span className="text-[11px] text-rose-700 mt-1 block">
@@ -228,7 +213,7 @@ export const ParentDashboard: React.FC<Props> = ({
                             </div>
 
                             <span
-                              className={`font-bold px-3 py-1 rounded-full text-xs ${
+                              className={`font-bold px-3 py-1 rounded-full text-xs shrink-0 ${
                                 isPres
                                   ? 'bg-emerald-100 text-emerald-800'
                                   : 'bg-rose-100 text-rose-800'

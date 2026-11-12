@@ -162,8 +162,9 @@ export const UserManagement: React.FC = () => {
   };
 
   const filteredUsers = users.filter(u => {
+    const name = u.displayName || (u.role === 'owner' ? 'الادمن' : u.username);
     const matchesSearch =
-      u.displayName.includes(searchTerm) ||
+      name.includes(searchTerm) ||
       u.username.includes(searchTerm) ||
       (u.phone && u.phone.includes(searchTerm));
     const matchesRole = !roleFilter || u.role === roleFilter;
@@ -260,7 +261,7 @@ export const UserManagement: React.FC = () => {
               <tbody className="divide-y divide-slate-100">
                 {filteredUsers.map(u => (
                   <tr key={u.id} className="hover:bg-slate-50/70 transition">
-                    <td className="p-3 font-bold text-slate-900">{u.displayName}</td>
+                    <td className="p-3 font-bold text-slate-900">{u.displayName || (u.role === 'owner' ? 'الادمن' : u.username)}</td>
                     <td className="p-3">
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-[#1F4E8C]">
                         {roleLabels[u.role] || u.role}

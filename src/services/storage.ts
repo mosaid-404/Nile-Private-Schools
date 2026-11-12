@@ -174,6 +174,11 @@ class StorageService {
         }
 
         let changed = false;
+        const previousNotificationsRaw = localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS);
+        const previousNotifIds = new Set<string>(
+          previousNotificationsRaw ? (JSON.parse(previousNotificationsRaw) as AppNotification[]).map(n => n.id) : []
+        );
+
         this.isSyncingFromCloud = true;
         try {
           snapshot.docs.forEach((docSnap) => {
@@ -189,6 +194,25 @@ class StorageService {
         }
 
         if (changed) {
+          // Trigger mobile/browser notification & sound for new notifications targeting current user
+          const currentUser = this.getCurrentUser();
+          if (currentUser) {
+            const latestNotifs = this.getNotifications();
+            const newForUser = latestNotifs.filter(n => {
+              if (previousNotifIds.has(n.id) || n.isRead) return false;
+              if (currentUser.role === 'owner') return false;
+              return (
+                n.recipientPhone === currentUser.phone ||
+                (!n.recipientPhone && n.recipientRole === currentUser.role)
+              );
+            });
+            if (newForUser.length > 0) {
+              const latest = newForUser[0];
+              this.triggerDeviceNotification(latest.title, latest.body, latest.url);
+              this.playNotificationSound();
+            }
+          }
+
           window.dispatchEvent(new Event('nps_cloud_sync'));
           window.dispatchEvent(new Event('nps_settings_updated'));
         }
@@ -203,6 +227,26 @@ class StorageService {
 
   // Initialize Seed Data (GEN-07)
   public initializeSeedData(): void {
+    // Auto-migrate: ensure admin user always has displayName = 'الادمن'
+    const existingUsers = this.get<User[]>(STORAGE_KEYS.USERS, []);
+    let updatedUsers = false;
+    for (const u of existingUsers) {
+      if (u.username === 'admin' || u.role === 'owner') {
+        if (!u.displayName || u.displayName.trim() === '' || u.displayName === 'المالك' || u.displayName === 'مدير النظام (الإدارة)') {
+          u.displayName = 'الادمن';
+          updatedUsers = true;
+        }
+      }
+    }
+    if (updatedUsers) {
+      this.saveUsers(existingUsers);
+      const current = this.getCurrentUser();
+      if (current && (current.username === 'admin' || current.role === 'owner')) {
+        current.displayName = 'الادمن';
+        this.setCurrentUser(current);
+      }
+    }
+
     if (localStorage.getItem(STORAGE_KEYS.INITIALIZED)) {
       return;
     }
@@ -214,7 +258,7 @@ class StorageService {
     const initialOwner: User = {
       id: 'usr_owner_1',
       username: 'admin',
-      displayName: 'مدير النظام (الإدارة)',
+      displayName: 'الادمن',
       role: 'owner',
       status: 'active',
       passwordHash: 'admin123',
@@ -260,7 +304,7 @@ class StorageService {
 
     this.logAudit(
       users[0]?.id || 'admin',
-      users[0]?.displayName || 'المالك',
+      users[0]?.displayName || 'الادمن',
       'حذف البيانات التجريبية',
       'System',
       'sys',
@@ -270,7 +314,20 @@ class StorageService {
 
   // --- Users & Auth ---
   public getUsers(): User[] {
-    return this.get<User[]>(STORAGE_KEYS.USERS, []);
+    const users = this.get<User[]>(STORAGE_KEYS.USERS, []);
+    let modified = false;
+    for (const u of users) {
+      if (u.username === 'admin' || u.role === 'owner') {
+        if (!u.displayName || u.displayName.trim() === '' || u.displayName === 'المالك' || u.displayName === 'مدير النظام (الإدارة)') {
+          u.displayName = 'الادمن';
+          modified = true;
+        }
+      }
+    }
+    if (modified) {
+      this.set(STORAGE_KEYS.USERS, users);
+    }
+    return users;
   }
 
   public saveUsers(users: User[]): void {
@@ -278,7 +335,14 @@ class StorageService {
   }
 
   public getCurrentUser(): User | null {
-    return this.get<User | null>(STORAGE_KEYS.CURRENT_USER, null);
+    const user = this.get<User | null>(STORAGE_KEYS.CURRENT_USER, null);
+    if (user && (user.username === 'admin' || user.role === 'owner')) {
+      if (!user.displayName || user.displayName.trim() === '' || user.displayName === 'المالك' || user.displayName === 'مدير النظام (الإدارة)') {
+        user.displayName = 'الادمن';
+        this.setCurrentUser(user);
+      }
+    }
+    return user;
   }
 
   public setCurrentUser(user: User | null): void {
@@ -528,16 +592,12 @@ class StorageService {
     const teacherId = `tch_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const userId = `usr_tch_${Date.now()}`;
 
-    // Generate automatic username T001, T002...
+    // Generate automatic longer username TEACHER_0001, TEACHER_0002...
     const count = teachers.length + 1;
-    const username = `T${count.toString().padStart(3, '0')}`;
+    const username = `TEACHER_${count.toString().padStart(4, '0')}`;
     
-    // Generate 8-character random temporary password
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let tempPassword = '';
-    for (let i = 0; i < 8; i++) {
-      tempPassword += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
+    // Fixed default password for teachers
+    const tempPassword = 'NPS@1234';
 
     const teacher: Teacher = {
       id: teacherId,
@@ -743,6 +803,12 @@ class StorageService {
         absentCount++;
       }
 
+      const teacherObj = this.getTeachers().find(
+        t => t.id === group?.teacherId || t.name === recordedBy
+      );
+      const subjectLabel = group?.subject || teacherObj?.subject || 'الحصة الدراسية';
+      const teacherLabel = teacherObj ? `${teacherObj.name} (${teacherObj.subject})` : recordedBy;
+
       if (existingIdx !== -1) {
         // Update existing record
         const old = allAttendance[existingIdx];
@@ -767,7 +833,7 @@ class StorageService {
               recipientPhone: student.parentPhone,
               recipientRole: 'parent',
               title: 'تنبيه غياب',
-              body: `تغيّب الطالب ${student.name} عن حصة ${group?.subject || 'المادة'} اليوم ${sessionDate} الساعة ${sessionTime}.`,
+              body: `تغيّب الطالب ${student.name} عن حصة ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
               url: '/#parent-children',
               type: 'absence',
               studentId: student.id
@@ -779,7 +845,7 @@ class StorageService {
               recipientPhone: student.parentPhone,
               recipientRole: 'parent',
               title: 'تصحيح حالة الحضور',
-              body: `تم تصحيح حالة الطالب ${student.name} في حصة ${group?.subject || 'المادة'} بتاريخ ${sessionDate} إلى «حاضر».`,
+              body: `تم تصحيح حالة الطالب ${student.name} في حصة ${subjectLabel} مع المعلم ${teacherLabel} بتاريخ ${sessionDate} إلى «حاضر».`,
               url: '/#parent-children',
               type: 'correction',
               studentId: student.id
@@ -804,7 +870,7 @@ class StorageService {
             recipientPhone: student.parentPhone,
             recipientRole: 'parent',
             title: 'تنبيه غياب',
-            body: `تغيّب الطالب ${student.name} عن حصة ${group?.subject || 'المادة'} اليوم ${sessionDate} الساعة ${sessionTime}.`,
+            body: `تغيّب الطالب ${student.name} عن حصة ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
             url: '/#parent-children',
             type: 'absence',
             studentId: student.id
@@ -862,6 +928,69 @@ class StorageService {
     return this.get<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []);
   }
 
+  public playNotificationSound(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.setValueAtTime(1174.66, now + 0.12);
+      gain.gain.setValueAtTime(0.18, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.45);
+    } catch {
+      // Ignore audio autoplay restrictions
+    }
+  }
+
+  public triggerDeviceNotification(title: string, body: string, url?: string, studentId?: string): void {
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      try {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.ready
+            .then((registration) => {
+              registration.showNotification(title, {
+                body,
+                icon: '/icons/icon-192.png',
+                badge: '/icons/icon-192.png',
+                dir: 'rtl',
+                lang: 'ar',
+                tag: `nps_${Date.now()}`,
+                renotify: true,
+                vibrate: [200, 100, 200],
+                data: { url: url || '/', studentId }
+              } as NotificationOptions);
+            })
+            .catch(() => {
+              new Notification(title, {
+                body,
+                icon: '/icons/icon-192.png',
+                dir: 'rtl',
+                lang: 'ar'
+              });
+            });
+        } else {
+          new Notification(title, {
+            body,
+            icon: '/icons/icon-192.png',
+            dir: 'rtl',
+            lang: 'ar'
+          });
+        }
+      } catch (err) {
+        console.warn('Native notification dispatch failed:', err);
+      }
+    }
+  }
+
   public sendPushNotification(data: Omit<AppNotification, 'id' | 'createdAt' | 'status' | 'isRead'>): AppNotification {
     const notifications = this.getNotifications();
     const newNotif: AppNotification = {
@@ -875,28 +1004,10 @@ class StorageService {
     notifications.unshift(newNotif);
     this.set(STORAGE_KEYS.NOTIFICATIONS, notifications);
 
-    // If browser supports native Notification and permission granted, trigger system notification
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      try {
-        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-          navigator.serviceWorker.controller.postMessage({
-            type: 'SHOW_NOTIFICATION',
-            title: newNotif.title,
-            body: newNotif.body,
-            url: newNotif.url,
-            studentId: newNotif.studentId
-          });
-        } else {
-          new Notification(newNotif.title, {
-            body: newNotif.body,
-            icon: '/icons/icon-192.png',
-            dir: 'rtl',
-            lang: 'ar'
-          });
-        }
-      } catch (err) {
-        console.warn('Native notification dispatch failed:', err);
-      }
+    const currentUser = this.getCurrentUser();
+    if (currentUser && (currentUser.phone === newNotif.recipientPhone || (!newNotif.recipientPhone && currentUser.role === newNotif.recipientRole))) {
+      this.triggerDeviceNotification(newNotif.title, newNotif.body, newNotif.url, newNotif.studentId);
+      this.playNotificationSound();
     }
 
     return newNotif;

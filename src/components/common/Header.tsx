@@ -101,11 +101,11 @@ export const Header: React.FC<Props> = ({
 
             {/* User Profile Pill */}
             <div className="flex items-center gap-2 pr-2 border-r border-slate-200">
-              <div className="text-right hidden sm:block">
-                <p className="text-xs font-bold text-slate-800 leading-tight truncate max-w-[140px]">
-                  {currentUser.displayName}
+              <div className="text-right flex flex-col justify-center">
+                <p className="text-xs font-bold text-slate-800 leading-tight truncate max-w-[100px] sm:max-w-[140px]">
+                  {currentUser.displayName || (currentUser.role === 'owner' ? 'الادمن' : currentUser.username)}
                 </p>
-                <span className={`inline-block text-[10px] font-bold px-1.5 py-0.2 rounded ${currentRoleInfo.bg} ${currentRoleInfo.text}`}>
+                <span className={`inline-block text-[10px] font-bold px-1.5 py-0.2 rounded ${currentRoleInfo.bg} ${currentRoleInfo.text} truncate max-w-[90px] sm:max-w-none`}>
                   {currentRoleInfo.label}
                   {currentUser.role === 'teacher' && (() => {
                     const tch = storage.getTeachers().find(t => t.userId === currentUser.id || t.id === currentUser.relatedId);
@@ -147,30 +147,34 @@ export const Header: React.FC<Props> = ({
                       <div className="max-h-60 overflow-y-auto">
                         {allUsers
                           .filter(u => {
+                            const name = (u.displayName || (u.role === 'owner' ? 'الادمن' : u.username)).toLowerCase();
                             const q = switchSearch.trim().toLowerCase();
                             if (!q) return true;
                             return (
-                              u.displayName.toLowerCase().includes(q) ||
+                              name.includes(q) ||
                               u.username.toLowerCase().includes(q) ||
                               (u.phone && u.phone.includes(q))
                             );
                           })
-                          .map(u => (
-                            <button
-                              key={u.id}
-                              onClick={() => {
-                                setShowSwitchMenu(false);
-                                setSwitchSearch('');
-                                onSwitchUser(u);
-                              }}
-                              className="w-full px-3 py-2 text-xs flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
-                            >
-                              <span className="font-semibold text-slate-800 truncate max-w-[160px]">{u.displayName}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
-                                {roleLabels[u.role]?.label || u.role}
-                              </span>
-                            </button>
-                          ))}
+                          .map((u, idx) => {
+                            const dispName = u.displayName || (u.role === 'owner' ? 'الادمن' : u.username);
+                            return (
+                              <button
+                                key={`${u.id}_${idx}`}
+                                onClick={() => {
+                                  setShowSwitchMenu(false);
+                                  setSwitchSearch('');
+                                  onSwitchUser(u);
+                                }}
+                                className="w-full px-3 py-2 text-xs flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
+                              >
+                                <span className="font-semibold text-slate-800 truncate max-w-[160px]">{dispName}</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
+                                  {roleLabels[u.role]?.label || u.role}
+                                </span>
+                              </button>
+                            );
+                          })}
                       </div>
                     </div>
                   )}
