@@ -15,27 +15,44 @@ import { ParentDashboard } from './components/parent/ParentDashboard';
 
 export default function App() {
   const [, setSyncTick] = useState(0);
-
-  // Initialize sample seed data once on first mount and start Firestore cloud sync
-  useEffect(() => {
-    storage.initializeSeedData();
-    const unsubscribe = storage.startCloudSync();
-    const handleSync = () => setSyncTick(t => t + 1);
-    window.addEventListener('nps_cloud_sync', handleSync);
-    return () => {
-      unsubscribe();
-      window.removeEventListener('nps_cloud_sync', handleSync);
-    };
-  }, []);
+  const [cloudReady, setCloudReady] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    storage.initializeSeedData();
+    storage.ensureLocalDefaults();
     return storage.getCurrentUser();
   });
   const [isAdminSession, setIsAdminSession] = useState<boolean>(() => {
     const u = storage.getCurrentUser();
     return u?.role === 'owner' || localStorage.getItem('nps_admin_session') === 'true';
   });
+
+  // Hydrate from Firestore first before mounting views, then keep live cloud sync active
+  useEffect(() => {
+    let mounted = true;
+    const unsubscribe = storage.startCloudSync();
+
+    storage.waitForInitialCloudSync().then(() => {
+      if (!mounted) return;
+      const syncedUser = storage.getCurrentUser();
+      setCurrentUser(syncedUser);
+      setIsAdminSession(syncedUser?.role === 'owner' || localStorage.getItem('nps_admin_session') === 'true');
+      setCloudReady(true);
+    });
+
+    const handleSync = () => {
+      const syncedUser = storage.getCurrentUser();
+      if (syncedUser) {
+        setCurrentUser(syncedUser);
+      }
+      setSyncTick(t => t + 1);
+    };
+    window.addEventListener('nps_cloud_sync', handleSync);
+    return () => {
+      mounted = false;
+      unsubscribe();
+      window.removeEventListener('nps_cloud_sync', handleSync);
+    };
+  }, []);
 
   const [selectedStudentForAttendance, setSelectedStudentForAttendance] = useState<string | undefined>(undefined);
 
@@ -70,6 +87,22 @@ export default function App() {
   const handleNavigateToStudentAttendance = (studentId: string) => {
     setSelectedStudentForAttendance(studentId);
   };
+
+  if (!cloudReady) {
+    return (
+      <div className="min-h-screen bg-[#F4F6F8] flex flex-col items-center justify-center p-4 font-['Cairo',sans-serif]" dir="rtl">
+        <div className="bg-white rounded-3xl shadow-lg border border-slate-100 p-8 flex flex-col items-center gap-4 max-w-xs w-full text-center">
+          <div className="w-12 h-12 rounded-2xl bg-[#1F4E8C] flex items-center justify-center animate-pulse">
+            <img src="/icons/icon.svg" alt="NPS" className="w-8 h-8 object-contain" />
+          </div>
+          <div>
+            <p className="text-sm font-bold text-[#163A6B]">جاري تحميل ومزامنة البيانات...</p>
+            <p className="text-xs text-slate-500 mt-1">يرجى الانتظار لحظة لاستعادة أحدث البيانات</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // If not logged in, show unified single login page (AUTH-01)
   if (!currentUser) {

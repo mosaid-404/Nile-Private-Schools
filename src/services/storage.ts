@@ -1,5 +1,23 @@
-import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocsFromServer, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+function logFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+}
 import {
   User,
   Student,
@@ -122,6 +140,32 @@ class StorageService {
   }
 
   private isSyncingFromCloud = false;
+  private cloudHydrated = false;
+  private initialSyncPromise: Promise<void> | null = null;
+
+  private getSyncKeys(): string[] {
+    return Object.values(STORAGE_KEYS).filter(
+      (k) =>
+        k !== STORAGE_KEYS.CURRENT_USER &&
+        k !== STORAGE_KEYS.LOGIN_ATTEMPTS &&
+        k !== STORAGE_KEYS.OFFLINE_QUEUE &&
+        k !== STORAGE_KEYS.INITIALIZED
+    );
+  }
+
+  private setLocalOnly<T>(key: string, value: T): void {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      console.error(`Error saving to localStorage key "${key}":`, e);
+    }
+  }
+
+  private setLocalIfMissing<T>(key: string, value: T): void {
+    if (localStorage.getItem(key) === null) {
+      this.setLocalOnly(key, value);
+    }
+  }
 
   private set<T>(key: string, value: T): void {
     try {
@@ -139,7 +183,7 @@ class StorageService {
           value: serialized,
           updatedAt: new Date().toISOString()
         }).catch((err) => {
-          console.error(`Firestore sync error for "${key}":`, err);
+          logFirestoreError(err, OperationType.WRITE, `nps_store/${key}`);
         });
       }
     } catch (e) {
@@ -147,29 +191,103 @@ class StorageService {
     }
   }
 
+  private syncCurrentUserFromUsers(): void {
+    const current = this.get<User | null>(STORAGE_KEYS.CURRENT_USER, null);
+    if (!current) return;
+    const users = this.get<User[]>(STORAGE_KEYS.USERS, []);
+    const matched = users.find(u => u.id === current.id || u.username === current.username);
+    if (matched) {
+      this.setLocalOnly(STORAGE_KEYS.CURRENT_USER, matched);
+    }
+  }
+
+  private normalizeAdminDisplayNameLocally(): void {
+    const existingUsers = this.get<User[]>(STORAGE_KEYS.USERS, []);
+    let updatedUsers = false;
+    for (const u of existingUsers) {
+      if (u.username === 'admin' || u.role === 'owner') {
+        if (!u.displayName || u.displayName.trim() === '' || u.displayName === 'المالك' || u.displayName === 'مدير النظام (الإدارة)') {
+          u.displayName = 'الادمن';
+          updatedUsers = true;
+        }
+      }
+    }
+    if (updatedUsers) {
+      this.setLocalOnly(STORAGE_KEYS.USERS, existingUsers);
+      const current = this.get<User | null>(STORAGE_KEYS.CURRENT_USER, null);
+      if (current && (current.username === 'admin' || current.role === 'owner')) {
+        current.displayName = 'الادمن';
+        this.setLocalOnly(STORAGE_KEYS.CURRENT_USER, current);
+      }
+    }
+  }
+
+  private async hydrateFromCloudServer(): Promise<void> {
+    try {
+      const serverSnap = await getDocsFromServer(collection(db, 'nps_store'));
+      if (!serverSnap.empty) {
+        this.isSyncingFromCloud = true;
+        try {
+          serverSnap.docs.forEach((docSnap) => {
+            const key = docSnap.id;
+            const cloudVal = docSnap.data()?.value;
+            if (typeof cloudVal === 'string') {
+              localStorage.setItem(key, cloudVal);
+            }
+          });
+        } finally {
+          this.isSyncingFromCloud = false;
+        }
+        this.normalizeAdminDisplayNameLocally();
+        this.syncCurrentUserFromUsers();
+        localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
+        this.cloudHydrated = true;
+        window.dispatchEvent(new Event('nps_cloud_sync'));
+        window.dispatchEvent(new Event('nps_settings_updated'));
+      } else if (!serverSnap.metadata.fromCache) {
+        // Server confirmed database is genuinely empty (brand-new installation)
+        this.ensureLocalDefaults();
+        const syncKeys = this.getSyncKeys();
+        await Promise.all(
+          syncKeys.map((key) => {
+            const localVal = localStorage.getItem(key);
+            if (!localVal) return Promise.resolve();
+            return setDoc(doc(db, 'nps_store', key), {
+              value: localVal,
+              updatedAt: new Date().toISOString()
+            }).catch((err) => {
+              logFirestoreError(err, OperationType.WRITE, `nps_store/${key}`);
+            });
+          })
+        );
+        localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
+        this.cloudHydrated = true;
+      }
+    } catch (error) {
+      logFirestoreError(error, OperationType.LIST, 'nps_store');
+    }
+  }
+
+  public waitForInitialCloudSync(timeoutMs = 2500): Promise<void> {
+    this.ensureLocalDefaults();
+    if (!this.initialSyncPromise) {
+      this.initialSyncPromise = Promise.race([
+        this.hydrateFromCloudServer(),
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+      ]);
+    }
+    return this.initialSyncPromise;
+  }
+
   public startCloudSync(): () => void {
-    const syncKeys = Object.values(STORAGE_KEYS).filter(
-      (k) =>
-        k !== STORAGE_KEYS.CURRENT_USER &&
-        k !== STORAGE_KEYS.LOGIN_ATTEMPTS &&
-        k !== STORAGE_KEYS.OFFLINE_QUEUE &&
-        k !== STORAGE_KEYS.INITIALIZED
-    );
+    // Ensure initial hydration starts if not already triggered
+    void this.waitForInitialCloudSync();
 
     const unsubscribe = onSnapshot(
       collection(db, 'nps_store'),
       (snapshot) => {
+        // NEVER overwrite Firestore when snapshot is empty (prevents race/cache wipes)
         if (snapshot.empty) {
-          // Push initial local seed data to Firestore
-          syncKeys.forEach((key) => {
-            const localVal = localStorage.getItem(key);
-            if (localVal) {
-              setDoc(doc(db, 'nps_store', key), {
-                value: localVal,
-                updatedAt: new Date().toISOString()
-              }).catch(() => {});
-            }
-          });
           return;
         }
 
@@ -193,7 +311,13 @@ class StorageService {
           this.isSyncingFromCloud = false;
         }
 
+        this.cloudHydrated = true;
+        localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
+
         if (changed) {
+          this.normalizeAdminDisplayNameLocally();
+          this.syncCurrentUserFromUsers();
+
           // Trigger mobile/browser notification & sound for new notifications targeting current user
           const currentUser = this.getCurrentUser();
           if (currentUser) {
@@ -218,43 +342,15 @@ class StorageService {
         }
       },
       (error) => {
-        console.error('Firestore onSnapshot error:', error);
+        logFirestoreError(error, OperationType.GET, 'nps_store');
       }
     );
 
     return unsubscribe;
   }
 
-  // Initialize Seed Data (GEN-07)
-  public initializeSeedData(): void {
-    // Auto-migrate: ensure admin user always has displayName = 'الادمن'
-    const existingUsers = this.get<User[]>(STORAGE_KEYS.USERS, []);
-    let updatedUsers = false;
-    for (const u of existingUsers) {
-      if (u.username === 'admin' || u.role === 'owner') {
-        if (!u.displayName || u.displayName.trim() === '' || u.displayName === 'المالك' || u.displayName === 'مدير النظام (الإدارة)') {
-          u.displayName = 'الادمن';
-          updatedUsers = true;
-        }
-      }
-    }
-    if (updatedUsers) {
-      this.saveUsers(existingUsers);
-      const current = this.getCurrentUser();
-      if (current && (current.username === 'admin' || current.role === 'owner')) {
-        current.displayName = 'الادمن';
-        this.setCurrentUser(current);
-      }
-    }
-
-    if (localStorage.getItem(STORAGE_KEYS.INITIALIZED)) {
-      return;
-    }
-
-    // 1. Settings
-    this.set(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
-
-    // 2. Initial Owner / Admin Account only
+  // Non-destructive local defaults: NEVER overwrites existing localStorage keys and NEVER writes to Firestore!
+  public ensureLocalDefaults(): void {
     const initialOwner: User = {
       id: 'usr_owner_1',
       username: 'admin',
@@ -267,21 +363,30 @@ class StorageService {
       createdAt: new Date().toISOString()
     };
 
-    this.set(STORAGE_KEYS.USERS, [initialOwner]);
-    this.set(STORAGE_KEYS.TEACHERS, []);
-    this.set(STORAGE_KEYS.CLASSES, []);
-    this.set(STORAGE_KEYS.SUBJECTS, DEFAULT_SETTINGS.subjects.map((name, i) => ({ id: `sbj_${i + 1}`, name })));
-    this.set(STORAGE_KEYS.PARENTS, []);
-    this.set(STORAGE_KEYS.STUDENTS, []);
-    this.set(STORAGE_KEYS.GROUPS, []);
-    this.set(STORAGE_KEYS.SCHEDULE_SLOTS, []);
-    this.set(STORAGE_KEYS.SESSIONS, []);
-    this.set(STORAGE_KEYS.ATTENDANCE, []);
-    this.set(STORAGE_KEYS.NOTIFICATIONS, []);
-    this.set(STORAGE_KEYS.BROADCASTS, []);
-    this.set(STORAGE_KEYS.AUDIT_LOGS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
+    this.setLocalIfMissing(STORAGE_KEYS.USERS, [initialOwner]);
+    this.setLocalIfMissing(STORAGE_KEYS.TEACHERS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.CLASSES, []);
+    this.setLocalIfMissing(
+      STORAGE_KEYS.SUBJECTS,
+      DEFAULT_SETTINGS.subjects.map((name, i) => ({ id: `sbj_${i + 1}`, name }))
+    );
+    this.setLocalIfMissing(STORAGE_KEYS.PARENTS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.STUDENTS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.GROUPS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.SCHEDULE_SLOTS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.SESSIONS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.ATTENDANCE, []);
+    this.setLocalIfMissing(STORAGE_KEYS.NOTIFICATIONS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.BROADCASTS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.AUDIT_LOGS, []);
 
-    localStorage.setItem(STORAGE_KEYS.INITIALIZED, 'true');
+    this.normalizeAdminDisplayNameLocally();
+  }
+
+  // Initialize Seed Data (kept as safe non-destructive alias)
+  public initializeSeedData(): void {
+    this.ensureLocalDefaults();
   }
 
   // Single button delete demo data (GEN-07)
@@ -325,7 +430,11 @@ class StorageService {
       }
     }
     if (modified) {
-      this.set(STORAGE_KEYS.USERS, users);
+      if (this.cloudHydrated) {
+        this.set(STORAGE_KEYS.USERS, users);
+      } else {
+        this.setLocalOnly(STORAGE_KEYS.USERS, users);
+      }
     }
     return users;
   }

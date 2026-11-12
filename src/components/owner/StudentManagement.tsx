@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Users,
   Search,
@@ -43,6 +43,12 @@ export const StudentManagement: React.FC = () => {
   const attendance = storage.getAttendanceRecords();
   const invoices = storage.getInvoices();
   const groups = storage.getGroups();
+
+  useEffect(() => {
+    const onCloudSync = () => setStudents(storage.getStudents());
+    window.addEventListener('nps_cloud_sync', onCloudSync);
+    return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
+  }, []);
 
   const refreshData = () => {
     setStudents(storage.getStudents());

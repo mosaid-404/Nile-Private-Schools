@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   GraduationCap,
   Plus,
@@ -42,6 +42,12 @@ export const TeacherManagement: React.FC = () => {
   const groups = storage.getGroups();
   const sessions = storage.getSessions();
   const attendance = storage.getAttendanceRecords();
+
+  useEffect(() => {
+    const onCloudSync = () => setTeachers(storage.getTeachers());
+    window.addEventListener('nps_cloud_sync', onCloudSync);
+    return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
+  }, []);
 
   const refreshTeachers = () => {
     setTeachers(storage.getTeachers());

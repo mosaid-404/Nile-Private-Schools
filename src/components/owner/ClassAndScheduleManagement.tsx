@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Calendar,
   Clock,
@@ -24,6 +24,19 @@ export const ClassAndScheduleManagement: React.FC = () => {
   const [teachers, setTeachers] = useState<Teacher[]>(() => storage.getTeachers());
   const [students, setStudents] = useState<Student[]>(() => storage.getStudents());
   const [settings, setSettings] = useState(() => storage.getSettings());
+
+  useEffect(() => {
+    const onCloudSync = () => {
+      setClasses(storage.getClasses());
+      setGroups(storage.getGroups());
+      setSlots(storage.getScheduleSlots());
+      setTeachers(storage.getTeachers());
+      setStudents(storage.getStudents());
+      setSettings(storage.getSettings());
+    };
+    window.addEventListener('nps_cloud_sync', onCloudSync);
+    return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
+  }, []);
 
   // Filter
   const [selectedTeacherFilter, setSelectedTeacherFilter] = useState('');

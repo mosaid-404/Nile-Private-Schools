@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Building,
@@ -32,21 +32,66 @@ export const SettingsView: React.FC = () => {
   const [absenceThreshold, setAbsenceThreshold] = useState(settings.absenceThreshold);
   const [forceParentPass, setForceParentPass] = useState(settings.forceParentPasswordChange);
 
+  useEffect(() => {
+    const onCloudSync = () => {
+      const latest = storage.getSettings();
+      setSettings(latest);
+      setSchoolName(latest.schoolName);
+      setLogoUrl(latest.logoUrl || '/icons/icon.svg');
+      setAddress(latest.address);
+      setPhone1(latest.phones[0] || '');
+      setPhone2(latest.phones[1] || '');
+      setAcademicYear(latest.academicYear);
+      setEditWindowHours(latest.teacherEditWindowHours);
+      setAbsenceThreshold(latest.absenceThreshold);
+      setForceParentPass(latest.forceParentPasswordChange);
+    };
+    window.addEventListener('nps_cloud_sync', onCloudSync);
+    return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
+  }, []);
+
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 1024 * 1024) {
-      alert('حجم الصورة يجب أن يكون أقل من 1 ميجابايت');
+    if (file.size > 5 * 1024 * 1024) {
+      alert('حجم الصورة يجب أن يكون أقل من 5 ميجابايت');
       return;
     }
     const reader = new FileReader();
     reader.onload = (evt) => {
       const result = evt.target?.result as string;
-      if (result) {
+      if (!result) return;
+
+      // Keep SVGs or tiny images directly; compress larger raster images so Firestore 1MB limit is never exceeded
+      if (file.type === 'image/svg+xml' && result.length < 150000) {
         setLogoUrl(result);
         storage.updateSettings({ logoUrl: result });
         window.dispatchEvent(new Event('nps_settings_updated'));
+        return;
       }
+
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 256;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL('image/png');
+        const finalUrl = compressed.length > 200000 ? canvas.toDataURL('image/jpeg', 0.8) : compressed;
+        setLogoUrl(finalUrl);
+        storage.updateSettings({ logoUrl: finalUrl });
+        window.dispatchEvent(new Event('nps_settings_updated'));
+      };
+      img.src = result;
     };
     reader.readAsDataURL(file);
   };

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Shield,
   Search,
@@ -38,6 +38,11 @@ export const UserManagement: React.FC = () => {
     setUsers(storage.getUsers());
     setAuditLogs(storage.getAuditLogs());
   };
+
+  useEffect(() => {
+    window.addEventListener('nps_cloud_sync', refreshUsers);
+    return () => window.removeEventListener('nps_cloud_sync', refreshUsers);
+  }, []);
 
   const roleLabels: Record<string, string> = {
     owner: 'المالك / المدير',
