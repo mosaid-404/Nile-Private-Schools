@@ -607,8 +607,8 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
               <div className="bg-slate-800/90 rounded-2xl p-3.5 border border-slate-700/80 shadow-md space-y-1.5 text-right">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <div className="w-5 h-5 rounded-md bg-[#1F4E8C] p-0.5 flex items-center justify-center">
-                      <img src="/icons/icon.svg" alt="NPS" className="w-full h-full object-contain" />
+                    <div className="w-5 h-5 rounded-md bg-[#011242] overflow-hidden flex items-center justify-center">
+                      <img src="/icons/app-logo.png" alt="NPS" className="w-full h-full object-cover" />
                     </div>
                     <span className="font-bold text-xs text-slate-200">مدارس النيل (NPS)</span>
                   </div>

@@ -140,8 +140,8 @@ export const ReportsView: React.FC = () => {
             <p className="text-xs text-slate-600 mt-0.5">العام الدراسي: {settings.academicYear}</p>
             <p className="text-xs text-slate-500 mt-0.5">تاريخ استخراج التقرير: {formatArabicDate(todayStr)}</p>
           </div>
-          <div className="w-14 h-14 rounded-2xl bg-[#1F4E8C] p-2 flex items-center justify-center shrink-0 overflow-hidden">
-            <img src={settings.logoUrl || '/icons/icon.svg'} alt="شعار المدرسة" className="w-full h-full object-contain" />
+          <div className="w-16 h-16 rounded-2xl bg-[#011242] flex items-center justify-center shrink-0 overflow-hidden shadow-xs">
+            <img src={settings.logoUrl || '/icons/app-logo.png'} alt="شعار المدرسة" className="w-full h-full object-cover" />
           </div>
         </div>
 

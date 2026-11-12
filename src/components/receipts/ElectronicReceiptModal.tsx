@@ -97,8 +97,8 @@ export const ElectronicReceiptModal: React.FC<Props> = ({
                 هواتف: {settings.phones.join(' - ')}
               </p>
             </div>
-            <div className="w-16 h-16 rounded-2xl bg-[#1F4E8C] p-2 flex items-center justify-center shrink-0">
-              <img src="/icons/icon.svg" alt="NPS Logo" className="w-full h-full object-contain" />
+            <div className="w-16 h-16 rounded-2xl bg-[#011242] flex items-center justify-center shrink-0 overflow-hidden">
+              <img src="/icons/app-logo.png" alt="NPS Logo" className="w-full h-full object-cover" />
             </div>
           </div>
 

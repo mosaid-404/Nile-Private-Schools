@@ -3,13 +3,14 @@
  * Version: nps-v1.0.0
  */
 
-const CACHE_NAME = 'nps-app-shell-v1';
+const CACHE_NAME = 'nps-app-shell-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
   '/offline.html',
-  '/icons/icon.svg',
+  '/icons/app-logo.png',
+  '/icons/favicon-32.png',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/icon-maskable-512.png',

@@ -92,8 +92,8 @@ export default function App() {
     return (
       <div className="min-h-screen bg-[#F4F6F8] flex flex-col items-center justify-center p-4 font-['Cairo',sans-serif]" dir="rtl">
         <div className="bg-white rounded-3xl shadow-lg border border-slate-100 p-8 flex flex-col items-center gap-4 max-w-xs w-full text-center">
-          <div className="w-12 h-12 rounded-2xl bg-[#1F4E8C] flex items-center justify-center animate-pulse">
-            <img src="/icons/icon.svg" alt="NPS" className="w-8 h-8 object-contain" />
+          <div className="w-16 h-16 rounded-2xl bg-[#011242] flex items-center justify-center animate-pulse overflow-hidden shadow-md">
+            <img src="/icons/app-logo.png" alt="NPS" className="w-full h-full object-cover" />
           </div>
           <div>
             <p className="text-sm font-bold text-[#163A6B]">جاري تحميل ومزامنة البيانات...</p>

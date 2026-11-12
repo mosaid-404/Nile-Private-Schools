@@ -23,7 +23,7 @@ export const SettingsView: React.FC = () => {
 
   // Form states
   const [schoolName, setSchoolName] = useState(settings.schoolName);
-  const [logoUrl, setLogoUrl] = useState(settings.logoUrl || '/icons/icon.svg');
+  const [logoUrl, setLogoUrl] = useState(settings.logoUrl || '/icons/app-logo.png');
   const [address, setAddress] = useState(settings.address);
   const [phone1, setPhone1] = useState(settings.phones[0] || '');
   const [phone2, setPhone2] = useState(settings.phones[1] || '');
@@ -37,7 +37,7 @@ export const SettingsView: React.FC = () => {
       const latest = storage.getSettings();
       setSettings(latest);
       setSchoolName(latest.schoolName);
-      setLogoUrl(latest.logoUrl || '/icons/icon.svg');
+      setLogoUrl(latest.logoUrl || '/icons/app-logo.png');
       setAddress(latest.address);
       setPhone1(latest.phones[0] || '');
       setPhone2(latest.phones[1] || '');
@@ -100,7 +100,7 @@ export const SettingsView: React.FC = () => {
     e.preventDefault();
     const updated = storage.updateSettings({
       schoolName: schoolName.trim(),
-      logoUrl: logoUrl || '/icons/icon.svg',
+      logoUrl: logoUrl || '/icons/app-logo.png',
       address: address.trim(),
       phones: [phone1.trim(), phone2.trim()].filter(Boolean),
       academicYear: academicYear.trim(),
@@ -179,8 +179,8 @@ export const SettingsView: React.FC = () => {
 
           {/* School Logo Upload */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-200">
-            <div className="w-16 h-16 rounded-2xl bg-[#1F4E8C] p-2 flex items-center justify-center shrink-0 overflow-hidden shadow-xs">
-              <img src={logoUrl} alt="شعار المدرسة" className="w-full h-full object-contain" />
+            <div className="w-16 h-16 rounded-2xl bg-[#011242] flex items-center justify-center shrink-0 overflow-hidden shadow-xs">
+              <img src={logoUrl} alt="شعار المدرسة" className="w-full h-full object-cover" />
             </div>
             <div className="flex-1 space-y-2">
               <div className="text-xs font-bold text-slate-800">شعار المدرسة (اللوجو)</div>
@@ -191,10 +191,14 @@ export const SettingsView: React.FC = () => {
                   <span>تغيير اللوجو</span>
                   <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
                 </label>
-                {logoUrl !== '/icons/icon.svg' && (
+                {logoUrl !== '/icons/app-logo.png' && (
                   <button
                     type="button"
-                    onClick={() => setLogoUrl('/icons/icon.svg')}
+                    onClick={() => {
+                      setLogoUrl('/icons/app-logo.png');
+                      storage.updateSettings({ logoUrl: '/icons/app-logo.png' });
+                      window.dispatchEvent(new Event('nps_settings_updated'));
+                    }}
                     className="px-3 py-1.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-bold transition"
                   >
                     استعادة الافتراضي

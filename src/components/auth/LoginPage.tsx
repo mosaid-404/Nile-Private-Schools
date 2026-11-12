@@ -93,8 +93,8 @@ export const LoginPage: React.FC<Props> = ({ onLoginSuccess }) => {
     <div className="min-h-screen bg-gradient-to-b from-[#1F4E8C]/10 via-[#F4F6F8] to-white flex flex-col justify-center items-center p-4">
       {/* Top Brand Banner */}
       <div className="w-full max-w-md mx-auto mb-6 text-center">
-        <div className="inline-flex p-3 rounded-3xl bg-white shadow-xl shadow-blue-900/10 border border-slate-100 mb-3 overflow-hidden">
-          <img src={storage.getSettings().logoUrl || '/icons/icon.svg'} alt="شعار المدرسة" className="w-16 h-16 object-contain" />
+        <div className="inline-flex rounded-3xl bg-[#011242] shadow-xl shadow-blue-900/15 border border-[#1F4E8C]/30 mb-3 overflow-hidden">
+          <img src={storage.getSettings().logoUrl || '/icons/app-logo.png'} alt="شعار المدرسة" className="w-24 h-24 object-cover" />
         </div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-[#163A6B]">
           {storage.getSettings().schoolName}

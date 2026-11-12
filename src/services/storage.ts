@@ -69,7 +69,7 @@ const STORAGE_KEYS = {
 
 export const DEFAULT_SETTINGS: SchoolSettings = {
   schoolName: 'مدارس النيل الخاصة للغات',
-  logoUrl: '/icons/icon.svg',
+  logoUrl: '/icons/app-logo.png',
   address: 'شارع النيل، المعادي، القاهرة',
   phones: ['01012345678', '0223456789'],
   academicYear: '2026 / 2027',
@@ -219,6 +219,13 @@ class StorageService {
         current.displayName = 'الادمن';
         this.setLocalOnly(STORAGE_KEYS.CURRENT_USER, current);
       }
+    }
+
+    // Migrate old default SVG logo path to the new PNG app logo
+    const settings = this.get<SchoolSettings | null>(STORAGE_KEYS.SETTINGS, null);
+    if (settings && (!settings.logoUrl || settings.logoUrl === '/icons/icon.svg')) {
+      settings.logoUrl = '/icons/app-logo.png';
+      this.setLocalOnly(STORAGE_KEYS.SETTINGS, settings);
     }
   }
 

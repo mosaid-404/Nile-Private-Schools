@@ -32,8 +32,8 @@ export const PWAInstallModal: React.FC<Props> = ({ isOpen, onClose }) => {
             <X className="w-5 h-5" />
           </button>
           
-          <div className="w-16 h-16 mx-auto mb-3 rounded-2xl bg-white p-2 shadow-lg flex items-center justify-center">
-            <img src="/icons/icon.svg" alt="NPS" className="w-full h-full object-contain" />
+          <div className="w-20 h-20 mx-auto mb-3 rounded-2xl bg-[#011242] shadow-lg flex items-center justify-center overflow-hidden border border-white/20">
+            <img src="/icons/app-logo.png" alt="NPS" className="w-full h-full object-cover" />
           </div>
 
           <h2 className="text-xl font-bold">تثبيت تطبيق مدارس النيل</h2>

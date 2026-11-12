@@ -67,8 +67,8 @@ export const Header: React.FC<Props> = ({
         <div className="max-w-7xl mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-2">
           {/* School Brand */}
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-xl bg-[#1F4E8C] p-1.5 flex items-center justify-center shadow-xs shrink-0 overflow-hidden">
-              <img src={schoolSettings.logoUrl || '/icons/icon.svg'} alt="شعار المدرسة" className="w-full h-full object-contain" />
+            <div className="w-11 h-11 rounded-xl bg-[#011242] flex items-center justify-center shadow-sm shrink-0 overflow-hidden border border-[#1F4E8C]/20">
+              <img src={schoolSettings.logoUrl || '/icons/app-logo.png'} alt="شعار المدرسة" className="w-full h-full object-cover" />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 sm:gap-2">
