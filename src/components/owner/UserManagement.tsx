@@ -264,8 +264,8 @@ export const UserManagement: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredUsers.map(u => (
-                  <tr key={u.id} className="hover:bg-slate-50/70 transition">
+                {filteredUsers.map((u, idx) => (
+                  <tr key={`${u.id}_${idx}`} className="hover:bg-slate-50/70 transition">
                     <td className="p-3 font-bold text-slate-900">{u.displayName || (u.role === 'owner' ? 'الادمن' : u.username)}</td>
                     <td className="p-3">
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-[#1F4E8C]">

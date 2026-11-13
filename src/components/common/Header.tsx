@@ -42,6 +42,8 @@ export const Header: React.FC<Props> = ({
     const matchesRole =
       currentUser.role === 'owner'
         ? true
+        : n.recipientUserId
+        ? n.recipientUserId === currentUser.id
         : currentUser.role === 'parent' || currentUser.role === 'teacher'
         ? n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === currentUser.role)
         : n.recipientRole === currentUser.role;

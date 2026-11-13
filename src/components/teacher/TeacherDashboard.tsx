@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, Users, CheckCircle2, AlertCircle, ArrowLeft, BookOpen, Search, UserCheck } from 'lucide-react';
-import { User, SessionInstance, Group, ScheduleSlot, Student } from '../../types';
+import { Calendar, Clock, Users, CheckCircle2, AlertCircle, ArrowLeft, BookOpen, Search, UserCheck, Sparkles, MapPin } from 'lucide-react';
+import { User, SessionInstance, Group, ScheduleSlot, Student, TutoringGroup } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime, getTodayDateString, ARABIC_DAYS } from '../../utils/arabic';
 import { SessionAttendanceModal } from './SessionAttendanceModal';
@@ -10,10 +10,11 @@ interface Props {
 }
 
 export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
-  const [activeTab, setActiveTab] = useState<'quick_class' | 'today' | 'schedule' | 'groups'>('quick_class');
+  const [activeTab, setActiveTab] = useState<'quick_class' | 'today' | 'schedule' | 'groups' | 'tutoring'>('quick_class');
   const [selectedSession, setSelectedSession] = useState<SessionInstance | null>(null);
   const [todaySessions, setTodaySessions] = useState<SessionInstance[]>([]);
   const [teacherGroups, setTeacherGroups] = useState<Group[]>([]);
+  const [tutoringGroups, setTutoringGroups] = useState<TutoringGroup[]>([]);
   const [allStudents, setAllStudents] = useState<Student[]>([]);
   const [scheduleSlots, setScheduleSlots] = useState<ScheduleSlot[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -24,6 +25,11 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
   const [selectedClassNumber, setSelectedClassNumber] = useState<number>(1);
   const [quickRecords, setQuickRecords] = useState<Record<string, 'present' | 'absent'>>({});
   const [quickSavedInfo, setQuickSavedInfo] = useState<{ present: number; absent: number; notified: number } | null>(null);
+
+  // Tutoring attendance state (per tutoring group id)
+  const [activeTutAttendanceId, setActiveTutAttendanceId] = useState<string | null>(null);
+  const [tutAttendanceRecords, setTutAttendanceRecords] = useState<Record<string, 'present' | 'absent'>>({});
+  const [tutAttendanceSavedMsg, setTutAttendanceSavedMsg] = useState<Record<string, string>>({});
 
   const todayStr = getTodayDateString();
 
@@ -36,6 +42,16 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
     // Groups belonging to this teacher
     const groups = storage.getGroups().filter(g => g.teacherId === teacherId);
     setTeacherGroups(groups);
+
+    // Tutoring groups assigned to this teacher
+    const myTutoring = storage
+      .getTutoringGroups()
+      .filter(t => t.teacherId === teacherId)
+      .sort((a, b) => {
+        const cmp = b.date.localeCompare(a.date);
+        return cmp !== 0 ? cmp : b.startTime.localeCompare(a.startTime);
+      });
+    setTutoringGroups(myTutoring);
 
     // Today's sessions for these groups
     const sessions = storage.getOrCreateSessionsForDate(todayStr);
@@ -52,6 +68,9 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
 
   useEffect(() => {
     loadData();
+    const onCloudSync = () => loadData();
+    window.addEventListener('nps_cloud_sync', onCloudSync);
+    return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
   }, [currentUser]);
 
   const getGroupInfo = (groupId: string) => {
@@ -92,10 +111,10 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
         </div>
 
         {/* Quick Nav Tabs (ATT-02) */}
-        <div className="grid grid-cols-2 sm:flex items-center bg-slate-100 p-1.5 rounded-2xl text-xs font-bold gap-1 w-full sm:w-auto">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center bg-slate-100 p-1.5 rounded-2xl text-xs font-bold gap-1 w-full sm:w-auto">
           <button
             onClick={() => setActiveTab('quick_class')}
-            className={`px-2 sm:px-4 py-2.5 sm:py-2 rounded-xl transition-all text-center ${
+            className={`px-2 sm:px-3.5 py-2.5 sm:py-2 rounded-xl transition-all text-center ${
               activeTab === 'quick_class'
                 ? 'bg-[#1F4E8C] text-white shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
@@ -104,8 +123,19 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
             رصد حضور فصل
           </button>
           <button
+            onClick={() => setActiveTab('tutoring')}
+            className={`px-2 sm:px-3.5 py-2.5 sm:py-2 rounded-xl transition-all text-center flex items-center justify-center gap-1 ${
+              activeTab === 'tutoring'
+                ? 'bg-amber-600 text-white shadow-xs'
+                : 'text-amber-700 hover:bg-amber-50'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 shrink-0" />
+            <span>مجموعات التقوية ({tutoringGroups.length})</span>
+          </button>
+          <button
             onClick={() => setActiveTab('today')}
-            className={`px-2 sm:px-4 py-2.5 sm:py-2 rounded-xl transition-all text-center ${
+            className={`px-2 sm:px-3.5 py-2.5 sm:py-2 rounded-xl transition-all text-center ${
               activeTab === 'today'
                 ? 'bg-[#1F4E8C] text-white shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
@@ -115,7 +145,7 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
           </button>
           <button
             onClick={() => setActiveTab('schedule')}
-            className={`px-2 sm:px-4 py-2.5 sm:py-2 rounded-xl transition-all text-center ${
+            className={`px-2 sm:px-3.5 py-2.5 sm:py-2 rounded-xl transition-all text-center ${
               activeTab === 'schedule'
                 ? 'bg-[#1F4E8C] text-white shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
@@ -125,7 +155,7 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
           </button>
           <button
             onClick={() => setActiveTab('groups')}
-            className={`px-2 sm:px-4 py-2.5 sm:py-2 rounded-xl transition-all text-center ${
+            className={`px-2 sm:px-3.5 py-2.5 sm:py-2 rounded-xl transition-all text-center ${
               activeTab === 'groups'
                 ? 'bg-[#1F4E8C] text-white shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
@@ -558,6 +588,255 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* Tab 4: Tutoring Groups (مجموعات التقوية والفصول الخاصة - قسم منفصل) */}
+      {activeTab === 'tutoring' && (
+        <div className="bg-white rounded-3xl p-5 sm:p-6 shadow-sm border border-slate-200 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-lg font-extrabold text-slate-900">مجموعات التقوية والفصول الخاصة</h2>
+                <p className="text-xs text-slate-500">
+                  المجموعات المحددة لك من الإدارة بالتاريخ والوقت وقائمة الطلاب المشتركين
+                </p>
+              </div>
+            </div>
+            <span className="text-xs font-bold px-3 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+              {tutoringGroups.length} مجموعة
+            </span>
+          </div>
+
+          {tutoringGroups.length === 0 ? (
+            <div className="text-center py-12 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+              <Sparkles className="w-10 h-10 text-slate-300 mx-auto" />
+              <h3 className="font-bold text-slate-700 text-sm">لا توجد مجموعات تقوية مسندة لك حالياً</h3>
+              <p className="text-xs text-slate-500">سيصلك إشعار فوري عند قيام الإدارة بتحديد مجموعة تقوية جديدة لك.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {tutoringGroups.map(tg => {
+                const enrolledStudents = allStudents.filter(
+                  s => tg.studentIds.includes(s.id) && s.status === 'active'
+                );
+                const isToday = tg.date === todayStr;
+                const isUpcoming = tg.date > todayStr;
+                const isMarkingAttendance = activeTutAttendanceId === tg.id;
+                const sessionId = `tutoring_${tg.id}_${tg.date}`;
+                const existingAtt = storage.getAttendanceRecords().filter(a => a.sessionId === sessionId);
+
+                return (
+                  <div
+                    key={tg.id}
+                    className={`rounded-2xl p-4 sm:p-5 border space-y-3.5 ${
+                      isToday
+                        ? 'bg-amber-50/40 border-amber-300'
+                        : isUpcoming
+                        ? 'bg-blue-50/30 border-blue-200'
+                        : 'bg-slate-50/50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                            {tg.subject}
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
+                              isToday
+                                ? 'bg-emerald-600 text-white'
+                                : isUpcoming
+                                ? 'bg-[#1F4E8C] text-white'
+                                : 'bg-slate-200 text-slate-600'
+                            }`}
+                          >
+                            {isToday ? 'اليوم' : isUpcoming ? 'قادم' : 'موعد سابق'}
+                          </span>
+                          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-white border border-slate-200 text-slate-600">
+                            {tg.targetLabel}
+                          </span>
+                        </div>
+                        <h3 className="font-extrabold text-base text-slate-900 mt-1.5">{tg.title}</h3>
+                      </div>
+
+                      <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-700 shrink-0">
+                        {enrolledStudents.length} طالب
+                      </span>
+                    </div>
+
+                    <div className="bg-white rounded-xl p-3 border border-slate-200 text-xs space-y-1.5 text-slate-700">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500 flex items-center gap-1.5">
+                          <Calendar className="w-3.5 h-3.5 text-amber-600" />
+                          <span>التاريخ:</span>
+                        </span>
+                        <strong className="text-slate-900">{formatArabicDate(tg.date)}</strong>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-500 flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-[#1F4E8C]" />
+                          <span>الوقت:</span>
+                        </span>
+                        <strong className="text-slate-900 font-mono">
+                          {formatArabicTime(tg.startTime)} - {formatArabicTime(tg.endTime)}
+                        </strong>
+                      </div>
+                      {tg.room && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500 flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-rose-500" />
+                            <span>القاعة / المكان:</span>
+                          </span>
+                          <strong className="text-slate-900">{tg.room}</strong>
+                        </div>
+                      )}
+                      {tg.notes && (
+                        <div className="pt-1.5 border-t border-slate-100 text-[11px] text-slate-600">
+                          <strong>ملاحظات:</strong> {tg.notes}
+                        </div>
+                      )}
+                    </div>
+
+                    {tutAttendanceSavedMsg[tg.id] && (
+                      <div className="p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>{tutAttendanceSavedMsg[tg.id]}</span>
+                      </div>
+                    )}
+
+                    {/* Enrolled Students List / Quick Attendance */}
+                    <div className="bg-white rounded-xl p-3 border border-slate-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-700">
+                          قائمة الطلاب ({enrolledStudents.length})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isMarkingAttendance) {
+                              setActiveTutAttendanceId(null);
+                            } else {
+                              const initial: Record<string, 'present' | 'absent'> = {};
+                              enrolledStudents.forEach(s => {
+                                const prev = existingAtt.find(a => a.studentId === s.id);
+                                initial[s.id] = prev ? prev.status : 'present';
+                              });
+                              setTutAttendanceRecords(initial);
+                              setActiveTutAttendanceId(tg.id);
+                            }
+                          }}
+                          className={`px-3 py-1 rounded-lg text-[11px] font-bold transition ${
+                            isMarkingAttendance
+                              ? 'bg-slate-200 text-slate-700'
+                              : 'bg-[#1F4E8C] text-white hover:bg-[#163A6B]'
+                          }`}
+                        >
+                          {isMarkingAttendance
+                            ? 'إغلاق الرصد'
+                            : existingAtt.length > 0
+                            ? 'تعديل حضور المجموعة'
+                            : 'رصد حضور المجموعة'}
+                        </button>
+                      </div>
+
+                      <div className="max-h-52 overflow-y-auto divide-y divide-slate-100 space-y-1 pr-1">
+                        {enrolledStudents.map((st, idx) => {
+                          const stStatus = isMarkingAttendance
+                            ? tutAttendanceRecords[st.id] || 'present'
+                            : existingAtt.find(a => a.studentId === st.id)?.status;
+
+                          return (
+                            <div key={st.id} className="pt-1.5 flex items-center justify-between gap-2 text-xs">
+                              <div className="min-w-0">
+                                <span className="font-semibold text-slate-800">
+                                  {idx + 1}. {st.name}
+                                </span>
+                                <span className="block text-[10px] text-slate-400">
+                                  {st.grade} ({st.classNumber}) • <span className="font-mono">{st.code}</span>
+                                </span>
+                              </div>
+
+                              {isMarkingAttendance ? (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setTutAttendanceRecords(prev => ({ ...prev, [st.id]: 'present' }))
+                                    }
+                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                                      stStatus !== 'absent'
+                                        ? 'bg-emerald-600 text-white'
+                                        : 'bg-slate-100 text-slate-600'
+                                    }`}
+                                  >
+                                    حاضر
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setTutAttendanceRecords(prev => ({ ...prev, [st.id]: 'absent' }))
+                                    }
+                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                                      stStatus === 'absent'
+                                        ? 'bg-rose-600 text-white'
+                                        : 'bg-slate-100 text-slate-600'
+                                    }`}
+                                  >
+                                    غائب
+                                  </button>
+                                </div>
+                              ) : (
+                                stStatus && (
+                                  <span
+                                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                      stStatus === 'present'
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : 'bg-rose-100 text-rose-700'
+                                    }`}
+                                  >
+                                    {stStatus === 'present' ? 'حاضر' : 'غائب'}
+                                  </span>
+                                )
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {isMarkingAttendance && enrolledStudents.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const items = enrolledStudents.map(s => ({
+                              studentId: s.id,
+                              status: (tutAttendanceRecords[s.id] === 'absent' ? 'absent' : 'present') as
+                                | 'present'
+                                | 'absent'
+                            }));
+                            const res = storage.recordAttendance(sessionId, items, currentUser.displayName);
+                            setActiveTutAttendanceId(null);
+                            setTutAttendanceSavedMsg(prev => ({
+                              ...prev,
+                              [tg.id]: `تم حفظ حضور المجموعة (${res.absentCount} غائب${res.notifiedCount > 0 ? ` • تم إرسال ${res.notifiedCount} إشعار` : ''})`
+                            }));
+                            loadData();
+                          }}
+                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition"
+                        >
+                          حفظ حضور المجموعة
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

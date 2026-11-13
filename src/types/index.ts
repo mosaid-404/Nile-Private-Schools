@@ -117,15 +117,35 @@ export interface BroadcastNotification {
   senderName: string;
 }
 
+export interface TutoringGroup {
+  id: string;
+  title: string;
+  subject: string;
+  teacherId: string;
+  targetType: 'specific_students' | 'class' | 'grade';
+  targetLabel: string;
+  grade?: string;
+  classNumber?: number;
+  studentIds: string[];
+  date: string; // YYYY-MM-DD
+  startTime: string; // HH:MM
+  endTime: string; // HH:MM
+  room?: string;
+  notes?: string;
+  notifiedAt?: string;
+  createdAt: string;
+}
+
 export interface AppNotification {
   id: string;
   recipientPhone: string;
+  recipientUserId?: string;
   recipientRole: UserRole;
   recipientName?: string;
   title: string;
   body: string;
   url: string;
-  type: 'absence' | 'correction' | 'payment' | 'schedule_change' | 'reminder' | 'broadcast';
+  type: 'absence' | 'correction' | 'payment' | 'schedule_change' | 'reminder' | 'broadcast' | 'tutoring';
   category?: 'general' | 'academic' | 'activity' | 'honor' | 'urgent';
   studentId?: string;
   targetLabel?: string;

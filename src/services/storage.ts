@@ -1,4 +1,4 @@
-import { collection, doc, getDocsFromServer, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, getDocsFromServer, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 
 enum OperationType {
@@ -10,12 +10,28 @@ enum OperationType {
   WRITE = 'write',
 }
 
+function isFirestoreOfflineError(error: unknown): boolean {
+  if (!error) return false;
+  const code = (error as { code?: string }).code;
+  const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return (
+    code === 'unavailable' ||
+    msg.includes('client is offline') ||
+    msg.includes('failed to get document') ||
+    msg.includes('could not reach cloud firestore backend')
+  );
+}
+
 function logFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo = {
     error: error instanceof Error ? error.message : String(error),
     operationType,
     path
   };
+  if (isFirestoreOfflineError(error)) {
+    console.warn('Firestore Offline Fallback:', JSON.stringify(errInfo));
+    return;
+  }
   console.error('Firestore Error: ', JSON.stringify(errInfo));
 }
 import {
@@ -38,9 +54,10 @@ import {
   SchoolSettings,
   OfflineAttendanceQueueItem,
   UserRole,
-  BroadcastNotification
+  BroadcastNotification,
+  TutoringGroup
 } from '../types';
-import { getTodayDateString, cleanEgyptianPhone } from '../utils/arabic';
+import { getTodayDateString, cleanEgyptianPhone, formatArabicDate, formatArabicTime } from '../utils/arabic';
 
 const STORAGE_KEYS = {
   USERS: 'nps_users',
@@ -55,6 +72,7 @@ const STORAGE_KEYS = {
   ATTENDANCE: 'nps_attendance',
   NOTIFICATIONS: 'nps_notifications',
   BROADCASTS: 'nps_broadcasts',
+  TUTORING_GROUPS: 'nps_tutoring_groups',
   FEE_PLANS: 'nps_fee_plans',
   INVOICES: 'nps_invoices',
   PAYMENTS: 'nps_payments',
@@ -204,16 +222,34 @@ class StorageService {
   private normalizeAdminDisplayNameLocally(): void {
     const existingUsers = this.get<User[]>(STORAGE_KEYS.USERS, []);
     let updatedUsers = false;
-    for (const u of existingUsers) {
+    const seenIds = new Set<string>();
+    const seenUsernames = new Set<string>();
+    const dedupedUsers: User[] = [];
+    for (let i = 0; i < existingUsers.length; i++) {
+      const u = existingUsers[i];
       if (u.username === 'admin' || u.role === 'owner') {
         if (!u.displayName || u.displayName.trim() === '' || u.displayName === 'المالك' || u.displayName === 'مدير النظام (الإدارة)') {
           u.displayName = 'الادمن';
           updatedUsers = true;
         }
       }
+      const unameKey = u.username.toLowerCase();
+      if (seenIds.has(u.id)) {
+        if (seenUsernames.has(unameKey)) {
+          // Exact duplicate record, drop it
+          updatedUsers = true;
+          continue;
+        }
+        // Distinct account that collided on same millisecond ID: give unique ID
+        u.id = `${u.id}_d${i}`;
+        updatedUsers = true;
+      }
+      seenIds.add(u.id);
+      seenUsernames.add(unameKey);
+      dedupedUsers.push(u);
     }
     if (updatedUsers) {
-      this.setLocalOnly(STORAGE_KEYS.USERS, existingUsers);
+      this.setLocalOnly(STORAGE_KEYS.USERS, dedupedUsers);
       const current = this.get<User | null>(STORAGE_KEYS.CURRENT_USER, null);
       if (current && (current.username === 'admin' || current.role === 'owner')) {
         current.displayName = 'الادمن';
@@ -231,7 +267,24 @@ class StorageService {
 
   private async hydrateFromCloudServer(): Promise<void> {
     try {
-      const serverSnap = await getDocsFromServer(collection(db, 'nps_store'));
+      const storeCol = collection(db, 'nps_store');
+      let serverSnap;
+      const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+
+      if (isOnline) {
+        try {
+          serverSnap = await getDocsFromServer(storeCol);
+        } catch (err) {
+          if (isFirestoreOfflineError(err)) {
+            serverSnap = await getDocs(storeCol);
+          } else {
+            throw err;
+          }
+        }
+      } else {
+        serverSnap = await getDocs(storeCol);
+      }
+
       if (!serverSnap.empty) {
         this.isSyncingFromCloud = true;
         try {
@@ -332,6 +385,7 @@ class StorageService {
             const newForUser = latestNotifs.filter(n => {
               if (previousNotifIds.has(n.id) || n.isRead) return false;
               if (currentUser.role === 'owner') return false;
+              if (n.recipientUserId) return n.recipientUserId === currentUser.id;
               return (
                 n.recipientPhone === currentUser.phone ||
                 (!n.recipientPhone && n.recipientRole === currentUser.role)
@@ -353,7 +407,15 @@ class StorageService {
       }
     );
 
-    return unsubscribe;
+    const handleOnline = () => {
+      void this.hydrateFromCloudServer();
+    };
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('online', handleOnline);
+    };
   }
 
   // Non-destructive local defaults: NEVER overwrites existing localStorage keys and NEVER writes to Firestore!
@@ -386,6 +448,7 @@ class StorageService {
     this.setLocalIfMissing(STORAGE_KEYS.ATTENDANCE, []);
     this.setLocalIfMissing(STORAGE_KEYS.NOTIFICATIONS, []);
     this.setLocalIfMissing(STORAGE_KEYS.BROADCASTS, []);
+    this.setLocalIfMissing(STORAGE_KEYS.TUTORING_GROUPS, []);
     this.setLocalIfMissing(STORAGE_KEYS.AUDIT_LOGS, []);
 
     this.normalizeAdminDisplayNameLocally();
@@ -409,6 +472,7 @@ class StorageService {
     this.set(STORAGE_KEYS.SESSIONS, []);
     this.set(STORAGE_KEYS.ATTENDANCE, []);
     this.set(STORAGE_KEYS.NOTIFICATIONS, []);
+    this.set(STORAGE_KEYS.TUTORING_GROUPS, []);
     this.set(STORAGE_KEYS.INVOICES, []);
     this.set(STORAGE_KEYS.PAYMENTS, []);
     this.set(STORAGE_KEYS.RECEIPTS, []);
@@ -627,8 +691,8 @@ class StorageService {
     }
 
     // Create new Parent & User
-    const parentId = `prt_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    const userId = `usr_prt_${Date.now()}`;
+    const parentId = `prt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const userId = `usr_prt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const displayName = `ولي أمر الطالب ${studentName}`;
 
     const newParent: Parent = {
@@ -705,8 +769,8 @@ class StorageService {
 
   public saveTeacher(data: { name: string; subject: string; phone?: string }): { teacher: Teacher; tempPassword: string; username: string } {
     const teachers = this.getTeachers();
-    const teacherId = `tch_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-    const userId = `usr_tch_${Date.now()}`;
+    const teacherId = `tch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const userId = `usr_tch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
     // Generate automatic longer username TEACHER_0001, TEACHER_0002...
     const count = teachers.length + 1;
@@ -781,6 +845,111 @@ class StorageService {
       groups.push(group);
     }
     this.set(STORAGE_KEYS.GROUPS, groups);
+  }
+
+  // --- Tutoring / Reinforcement Groups (مجموعات التقوية والفصول الخاصة) ---
+  public getTutoringGroups(): TutoringGroup[] {
+    return this.get<TutoringGroup[]>(STORAGE_KEYS.TUTORING_GROUPS, []);
+  }
+
+  public saveTutoringGroup(
+    group: TutoringGroup,
+    sendNotifications: boolean = true
+  ): { group: TutoringGroup; parentCount: number; teacherNotified: boolean } {
+    const list = this.getTutoringGroups();
+    const idx = list.findIndex(g => g.id === group.id);
+    if (idx !== -1) {
+      list[idx] = group;
+    } else {
+      list.unshift(group);
+    }
+    this.set(STORAGE_KEYS.TUTORING_GROUPS, list);
+
+    let parentCount = 0;
+    let teacherNotified = false;
+    if (sendNotifications) {
+      const res = this.notifyTutoringGroup(group.id);
+      parentCount = res.parentCount;
+      teacherNotified = res.teacherNotified;
+    }
+
+    return { group, parentCount, teacherNotified };
+  }
+
+  public notifyTutoringGroup(groupId: string): { parentCount: number; teacherNotified: boolean } {
+    const list = this.getTutoringGroups();
+    const group = list.find(g => g.id === groupId);
+    if (!group) return { parentCount: 0, teacherNotified: false };
+
+    const teacher = this.getTeachers().find(t => t.id === group.teacherId);
+    const students = this.getStudents().filter(s => group.studentIds.includes(s.id) && s.status === 'active');
+
+    const dateFormatted = formatArabicDate(group.date);
+    const timeRange = `${formatArabicTime(group.startTime)} - ${formatArabicTime(group.endTime)}`;
+    const roomPart = group.room ? ` — المكان/القاعة: ${group.room}` : '';
+    const notesPart = group.notes ? ` (${group.notes})` : '';
+
+    let teacherNotified = false;
+    if (teacher) {
+      this.sendPushNotification({
+        recipientPhone: teacher.phone || '',
+        recipientUserId: teacher.userId,
+        recipientRole: 'teacher',
+        recipientName: teacher.name,
+        title: `مجموعة تقوية: ${group.title}`,
+        body: `تم تحديد مجموعة/فصل تقوية لك في مادة ${group.subject} (${group.targetLabel} • ${students.length} طالب) بتاريخ ${dateFormatted} من ${timeRange}${roomPart}${notesPart}.`,
+        url: '/#teacher-tutoring',
+        type: 'tutoring',
+        targetLabel: group.targetLabel
+      });
+      teacherNotified = true;
+    }
+
+    // Group students by parentPhone so a parent with siblings receives one clear notification naming all enrolled kids
+    const byParentPhone = new Map<string, Student[]>();
+    for (const st of students) {
+      if (!st.parentPhone) continue;
+      const arr = byParentPhone.get(st.parentPhone) || [];
+      arr.push(st);
+      byParentPhone.set(st.parentPhone, arr);
+    }
+
+    let parentCount = 0;
+    byParentPhone.forEach((kids, phone) => {
+      const names = kids.map(k => k.name).join(' و ');
+      const teacherInfo = teacher ? `${teacher.name} (${teacher.subject})` : 'معلم المادة';
+      this.sendPushNotification({
+        recipientPhone: phone,
+        recipientRole: 'parent',
+        recipientName: `ولي أمر ${names}`,
+        title: `موعد مجموعة تقوية: ${group.title}`,
+        body: `تم تحديد مجموعة تقوية للطالب/ة (${names}) في مادة ${group.subject} مع أ/ ${teacherInfo} بتاريخ ${dateFormatted} من ${timeRange}${roomPart}${notesPart}.`,
+        url: '/#parent-tutoring',
+        type: 'tutoring',
+        studentId: kids[0]?.id,
+        targetLabel: group.targetLabel
+      });
+      parentCount++;
+    });
+
+    group.notifiedAt = new Date().toISOString();
+    this.set(STORAGE_KEYS.TUTORING_GROUPS, list);
+
+    this.logAudit(
+      'admin',
+      'الادمن',
+      'إرسال إشعار مجموعة تقوية',
+      'TutoringGroup',
+      group.id,
+      `تم إرسال إشعار مجموعة "${group.title}" (${group.date} ${timeRange}) إلى المعلم و ${parentCount} ولي أمر`
+    );
+
+    return { parentCount, teacherNotified };
+  }
+
+  public deleteTutoringGroup(groupId: string): void {
+    const list = this.getTutoringGroups().filter(g => g.id !== groupId);
+    this.set(STORAGE_KEYS.TUTORING_GROUPS, list);
   }
 
   public syncStudentWithClassGroups(student: Student): void {
@@ -1121,7 +1290,13 @@ class StorageService {
     this.set(STORAGE_KEYS.NOTIFICATIONS, notifications);
 
     const currentUser = this.getCurrentUser();
-    if (currentUser && (currentUser.phone === newNotif.recipientPhone || (!newNotif.recipientPhone && currentUser.role === newNotif.recipientRole))) {
+    if (
+      currentUser &&
+      ((newNotif.recipientUserId && currentUser.id === newNotif.recipientUserId) ||
+        (!newNotif.recipientUserId &&
+          (currentUser.phone === newNotif.recipientPhone ||
+            (!newNotif.recipientPhone && currentUser.role === newNotif.recipientRole))))
+    ) {
       this.triggerDeviceNotification(newNotif.title, newNotif.body, newNotif.url, newNotif.studentId);
       this.playNotificationSound();
     }

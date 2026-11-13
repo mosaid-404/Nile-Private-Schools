@@ -30,6 +30,7 @@ export const NotificationCenterModal: React.FC<Props> = ({
   // Filter for current user's role/phone
   const rawUserNotifications = notifications.filter(n => {
     if (currentUser.role === 'owner') return true; // Owner sees all
+    if (n.recipientUserId) return n.recipientUserId === currentUser.id;
     if (currentUser.role === 'parent') {
       return n.recipientPhone === currentUser.phone;
     }
@@ -81,6 +82,7 @@ export const NotificationCenterModal: React.FC<Props> = ({
       case 'payment':
         return <CreditCard className="w-5 h-5 text-emerald-600" />;
       case 'schedule_change':
+      case 'tutoring':
         return <Calendar className="w-5 h-5 text-blue-600" />;
       default:
         return <AlertCircle className="w-5 h-5 text-amber-600" />;
