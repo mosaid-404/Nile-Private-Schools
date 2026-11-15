@@ -1154,13 +1154,21 @@ class StorageService {
   public recordAttendance(
     sessionId: string,
     records: { studentId: string; status: 'present' | 'absent'; note?: string }[],
-    recordedBy: string
+    recordedBy: string,
+    meta?: {
+      subjectName?: string;
+      sessionLabel?: string;
+      sessionDate?: string;
+      grade?: string;
+      classNumber?: number;
+    }
   ): { absentCount: number; notifiedCount: number } {
     const allAttendance = this.getAttendanceRecords();
     const sessions = this.getSessions();
     const students = this.getStudents();
     const groups = this.getGroups();
     const slots = this.getScheduleSlots();
+    const teachers = this.getTeachers();
 
     const session = sessions.find(s => s.id === sessionId);
     if (session) {
@@ -1172,38 +1180,41 @@ class StorageService {
 
     const group = session ? groups.find(g => g.id === session.groupId) : null;
     const slot = session ? slots.find(s => s.id === session.scheduleSlotId) : null;
-    const sessionTime = slot ? `${slot.startTime}` : 'اليوم';
-    const sessionDate = session ? session.date : getTodayDateString();
+    const nowTimeStr = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    const sessionTime = slot ? `${slot.startTime}` : nowTimeStr;
+    const sessionDate = meta?.sessionDate || (session ? session.date : getTodayDateString());
+    const nowIso = new Date().toISOString();
 
     let absentCount = 0;
     let notifiedCount = 0;
 
-    for (const item of records) {
+    for (let idx = 0; idx < records.length; idx++) {
+      const item = records[idx];
       const student = students.find(s => s.id === item.studentId);
       const existingIdx = allAttendance.findIndex(a => a.sessionId === sessionId && a.studentId === item.studentId);
-      const prevStatus = existingIdx !== -1 ? allAttendance[existingIdx].status : null;
 
       if (item.status === 'absent') {
         absentCount++;
       }
 
-      const teacherObj = this.getTeachers().find(
+      const teacherObj = teachers.find(
         t => t.id === group?.teacherId || t.name === recordedBy
       );
-      const subjectLabel = group?.subject || teacherObj?.subject || 'الحصة الدراسية';
+      const subjectLabel = meta?.subjectName || group?.subject || teacherObj?.subject || 'الحصة الدراسية';
+      const sessionLabel = meta?.sessionLabel || group?.name || subjectLabel;
       const teacherLabel = teacherObj ? `${teacherObj.name} (${teacherObj.subject})` : recordedBy;
       const parentPref = student
         ? this.getParentNotificationPref(student.parentId, student.parentPhone)
         : 'both';
 
       if (existingIdx !== -1) {
-        // Update existing record
+        // Update existing record for the exact same scheduled sessionId
         const old = allAttendance[existingIdx];
         if (old.status !== item.status) {
           const history = old.history || [];
           history.push({
             status: old.status,
-            changedAt: new Date().toISOString(),
+            changedAt: nowIso,
             changedBy: recordedBy
           });
 
@@ -1211,6 +1222,9 @@ class StorageService {
             ...old,
             status: item.status,
             note: item.note,
+            subjectName: old.subjectName || subjectLabel,
+            sessionLabel: old.sessionLabel || sessionLabel,
+            sessionDate: old.sessionDate || sessionDate,
             history
           };
 
@@ -1243,15 +1257,20 @@ class StorageService {
           }
         }
       } else {
-        // New record
+        // New record (appended sequentially per session)
         allAttendance.push({
-          id: `att_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+          id: `att_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
           sessionId,
           studentId: item.studentId,
           status: item.status,
           note: item.note,
-          recordedAt: new Date().toISOString(),
-          recordedBy
+          recordedAt: nowIso,
+          recordedBy,
+          subjectName: subjectLabel,
+          sessionLabel,
+          sessionDate,
+          grade: meta?.grade ?? student?.grade,
+          classNumber: meta?.classNumber ?? student?.classNumber
         });
 
         if (item.status === 'absent' && student) {
@@ -1260,7 +1279,7 @@ class StorageService {
               recipientPhone: student.parentPhone,
               recipientRole: 'parent',
               title: 'تنبيه غياب',
-              body: `تغيّب الطالب ${student.name} عن حصة ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
+              body: `تغيّب الطالب ${student.name} عن حصة ${subjectLabel} (${sessionLabel}) مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
               url: '/#parent-children',
               type: 'absence',
               studentId: student.id
@@ -1273,7 +1292,7 @@ class StorageService {
               recipientPhone: student.parentPhone,
               recipientRole: 'parent',
               title: 'إشعار حضور',
-              body: `تم تسجيل حضور الطالب ${student.name} في ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
+              body: `تم تسجيل حضور الطالب ${student.name} في ${subjectLabel} (${sessionLabel}) مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
               url: '/#parent-children',
               type: 'presence',
               studentId: student.id
@@ -1292,7 +1311,7 @@ class StorageService {
       'رصد الحضور والغياب',
       'Session',
       sessionId,
-      `تم رصد الحضور للحصة: ${absentCount} غياب، وتم إرسال ${notifiedCount} إشعار`
+      `تم رصد الحضور للحصة (${meta?.sessionLabel || sessionId}): ${absentCount} غياب، وتم إرسال ${notifiedCount} إشعار`
     );
 
     return { absentCount, notifiedCount };

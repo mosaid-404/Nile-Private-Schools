@@ -23,8 +23,18 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
   const settings = storage.getSettings();
   const [selectedGrade, setSelectedGrade] = useState<string>(settings.grades[0] || '');
   const [selectedClassNumber, setSelectedClassNumber] = useState<number>(1);
+  const [quickSubject, setQuickSubject] = useState<string>(() => {
+    const t = storage.getTeachers().find(x => x.userId === currentUser.id || x.id === currentUser.relatedId);
+    return t?.subject || settings.subjects[0] || 'حصة دراسية';
+  });
   const [quickRecords, setQuickRecords] = useState<Record<string, 'present' | 'absent'>>({});
-  const [quickSavedInfo, setQuickSavedInfo] = useState<{ present: number; absent: number; notified: number } | null>(null);
+  const [quickSavedInfo, setQuickSavedInfo] = useState<{
+    present: number;
+    absent: number;
+    notified: number;
+    periodNumber: number;
+    subject: string;
+  } | null>(null);
   const [departureInfo, setDepartureInfo] = useState<{ count: number; notified: number } | null>(null);
 
   // Tutoring attendance state (per tutoring group id)
@@ -181,23 +191,54 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
         ).sort((a, b) => a - b);
         const classOptions = availableClasses.length > 0 ? availableClasses : [1, 2, 3, 4];
 
+        const existingClassSessionsToday = new Set(
+          storage
+            .getAttendanceRecords()
+            .filter(a => {
+              const recDate = a.sessionDate || a.recordedAt.substring(0, 10);
+              if (recDate !== todayStr) return false;
+              if (a.sessionId.startsWith(`quick_${todayStr}_${selectedGrade}_${selectedClassNumber}`)) {
+                return true;
+              }
+              return a.grade === selectedGrade && a.classNumber === selectedClassNumber;
+            })
+            .map(a => a.sessionId)
+        );
+        const nextPeriodNumber = existingClassSessionsToday.size + 1;
+
         const presentCount = classStudents.filter(s => (quickRecords[s.id] || 'present') === 'present').length;
         const absentCount = classStudents.filter(s => quickRecords[s.id] === 'absent').length;
 
         const handleConfirmQuickAttendance = () => {
           if (classStudents.length === 0) return;
-          const sessionId = `quick_${todayStr}_${selectedGrade}_${selectedClassNumber}`;
+          const uniqueSuffix = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const sessionId = `quick_${todayStr}_${selectedGrade}_${selectedClassNumber}_${uniqueSuffix}`;
+          const subjectToSave = quickSubject || currentTeacher?.subject || 'حصة دراسية';
           const finalItems = classStudents.map(s => ({
             studentId: s.id,
             status: (quickRecords[s.id] === 'absent' ? 'absent' : 'present') as 'present' | 'absent'
           }));
-          const res = storage.recordAttendance(sessionId, finalItems, currentUser.displayName);
+          const res = storage.recordAttendance(
+            sessionId,
+            finalItems,
+            currentTeacher?.name || currentUser.displayName,
+            {
+              subjectName: subjectToSave,
+              sessionLabel: `الحصة ${nextPeriodNumber}`,
+              sessionDate: todayStr,
+              grade: selectedGrade,
+              classNumber: selectedClassNumber
+            }
+          );
           setDepartureInfo(null);
           setQuickSavedInfo({
             present: presentCount,
             absent: absentCount,
-            notified: res.notifiedCount
+            notified: res.notifiedCount,
+            periodNumber: nextPeriodNumber,
+            subject: subjectToSave
           });
+          setQuickRecords({});
           loadData();
         };
 
@@ -208,7 +249,7 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
           if (presentIds.length === 0) return;
           const res = storage.recordDeparture(
             presentIds,
-            currentUser.displayName,
+            currentTeacher?.name || currentUser.displayName,
             `${selectedGrade} - فصل ${selectedClassNumber}`
           );
           setDepartureInfo({ count: presentIds.length, notified: res.notifiedCount });
@@ -218,17 +259,22 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
           <div className="space-y-4">
             {/* Grade & Class Selector */}
             <div className="bg-white rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-base sm:text-lg font-extrabold text-slate-900 flex items-center gap-2">
                   <Users className="w-5 h-5 text-[#1F4E8C]" />
                   <span>اختيار الصف والفصل لرصد الحضور</span>
                 </h2>
-                <span className="text-xs font-bold text-[#1F4E8C] bg-blue-50 px-3 py-1 rounded-full">
-                  {classStudents.length} طالب
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1 rounded-full">
+                    الحصة رقم {nextPeriodNumber} اليوم
+                  </span>
+                  <span className="text-xs font-bold text-[#1F4E8C] bg-blue-50 px-3 py-1 rounded-full">
+                    {classStudents.length} طالب
+                  </span>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1.5">الصف الدراسي</label>
                   <select
@@ -258,7 +304,7 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                           setQuickRecords({});
                           setQuickSavedInfo(null);
                         }}
-                        className={`flex-1 min-w-[60px] py-2.5 px-3 rounded-xl text-xs font-bold border transition ${
+                        className={`flex-1 min-w-[54px] py-2.5 px-2.5 rounded-xl text-xs font-bold border transition ${
                           selectedClassNumber === num
                             ? 'bg-[#1F4E8C] text-white border-[#1F4E8C] shadow-xs'
                             : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -269,6 +315,24 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                     ))}
                   </div>
                 </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">المادة / الحصة</label>
+                  <select
+                    value={quickSubject}
+                    onChange={(e) => setQuickSubject(e.target.value)}
+                    className="w-full px-3.5 py-2.5 text-sm font-bold rounded-xl border border-slate-300 bg-white outline-hidden focus:border-[#1F4E8C]"
+                  >
+                    {Array.from(
+                      new Set([
+                        ...(currentTeacher?.subject ? [currentTeacher.subject] : []),
+                        ...settings.subjects
+                      ])
+                    ).map(subj => (
+                      <option key={subj} value={subj}>{subj}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
 
@@ -278,7 +342,9 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                 <div className="flex items-center gap-3">
                   <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
                   <div className="text-xs sm:text-sm">
-                    <strong className="text-emerald-900 block">تم تأكيد وحفظ حضور الفصل بنجاح!</strong>
+                    <strong className="text-emerald-900 block">
+                      تم تأكيد وحفظ الحصة {quickSavedInfo.periodNumber} ({quickSavedInfo.subject}) بنجاح!
+                    </strong>
                     <span className="text-emerald-700">
                       حاضر: {quickSavedInfo.present} • غائب: {quickSavedInfo.absent}
                       {quickSavedInfo.notified > 0 && ` • تم إرسال ${quickSavedInfo.notified} إشعار لأولياء الأمور`}
@@ -860,7 +926,16 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                                 | 'present'
                                 | 'absent'
                             }));
-                            const res = storage.recordAttendance(sessionId, items, currentUser.displayName);
+                            const res = storage.recordAttendance(
+                              sessionId,
+                              items,
+                              currentTeacher?.name || currentUser.displayName,
+                              {
+                                subjectName: tg.subject,
+                                sessionLabel: tg.title,
+                                sessionDate: tg.date
+                              }
+                            );
                             setActiveTutAttendanceId(null);
                             setTutAttendanceSavedMsg(prev => ({
                               ...prev,

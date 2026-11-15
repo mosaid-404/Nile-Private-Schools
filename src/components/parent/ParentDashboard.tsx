@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Bell, CheckCircle2, XCircle, Calendar, Clock, Sparkles, MapPin, BookOpen, Settings } from 'lucide-react';
+import { Users, Bell, CheckCircle2, XCircle, Calendar, Clock, Sparkles, MapPin, BookOpen, Settings, FileText } from 'lucide-react';
 import { User as UserType, Student } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime, getTodayDateString } from '../../utils/arabic';
 import { ChangePasswordModal } from '../common/ChangePasswordModal';
 import { ParentSettingsContent } from './ParentSettingsModal';
+import { ParentReportsView } from './ParentReportsView';
 
 interface Props {
   currentUser: UserType;
@@ -17,7 +18,7 @@ export const ParentDashboard: React.FC<Props> = ({
   onLogout,
   selectedStudentId
 }) => {
-  const [activeNav, setActiveNav] = useState<'children' | 'tutoring' | 'notifications' | 'settings'>('children');
+  const [activeNav, setActiveNav] = useState<'children' | 'tutoring' | 'reports' | 'notifications' | 'settings'>('children');
   const [children, setChildren] = useState<Student[]>([]);
   const [selectedChildId, setSelectedChildId] = useState<string>('all');
   const [showWelcomeModal, setShowWelcomeModal] = useState(false);
@@ -127,7 +128,7 @@ export const ParentDashboard: React.FC<Props> = ({
       </div>
 
       {/* Top Child Selector in grid boxes if multiple children exist */}
-      {children.length > 1 && (
+      {children.length > 1 && activeNav !== 'reports' && (
         <div className="bg-white rounded-2xl p-3 shadow-xs border border-slate-200 space-y-2">
           <span className="text-xs font-bold text-slate-500 block">اختر الابن:</span>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
@@ -163,7 +164,16 @@ export const ParentDashboard: React.FC<Props> = ({
         <div className="space-y-6">
           {displayedChildren.map(child => {
             const stats = getChildMonthlyStats(child.id);
-            const childRecords = attendanceRecords.filter(a => a.studentId === child.id);
+            const childRecords = attendanceRecords
+              .filter(a => a.studentId === child.id)
+              .slice()
+              .sort((a, b) => {
+                const dateA = a.sessionDate || a.recordedAt.substring(0, 10);
+                const dateB = b.sessionDate || b.recordedAt.substring(0, 10);
+                const dateCmp = dateB.localeCompare(dateA);
+                if (dateCmp !== 0) return dateCmp;
+                return a.recordedAt.localeCompare(b.recordedAt);
+              });
 
             return (
               <div key={child.id} className="bg-white rounded-3xl shadow-md shadow-slate-200/60 border border-slate-200/80 overflow-hidden">
@@ -194,11 +204,11 @@ export const ParentDashboard: React.FC<Props> = ({
                     <strong className="text-sm font-extrabold text-slate-800">{stats.total}</strong>
                   </div>
                   <div>
-                    <span className="text-[11px] text-emerald-700 block">أيام الحضور</span>
+                    <span className="text-[11px] text-emerald-700 block">حصص الحضور</span>
                     <strong className="text-sm font-extrabold text-emerald-700">{stats.present}</strong>
                   </div>
                   <div>
-                    <span className="text-[11px] text-rose-700 block">أيام الغياب</span>
+                    <span className="text-[11px] text-rose-700 block">حصص الغياب</span>
                     <strong className="text-sm font-extrabold text-rose-700">{stats.absent}</strong>
                   </div>
                 </div>
@@ -210,6 +220,11 @@ export const ParentDashboard: React.FC<Props> = ({
                       <Clock className="w-4 h-4 text-[#1F4E8C]" />
                       <span>سجل الحضور الزمني للحصص الدراسية</span>
                     </h3>
+                    {childRecords.length > 0 && (
+                      <span className="text-[11px] font-bold text-slate-500">
+                        {childRecords.length} حصة مسجلة
+                      </span>
+                    )}
                   </div>
 
                   {childRecords.length === 0 ? (
@@ -218,22 +233,28 @@ export const ParentDashboard: React.FC<Props> = ({
                     </p>
                   ) : (
                     <div className="space-y-2.5">
-                      {childRecords.map(rec => {
+                      {childRecords.map((rec, idx) => {
                         const session = sessions.find(s => s.id === rec.sessionId);
                         const grp = session ? groups.find(g => g.id === session.groupId) : null;
                         const tch = teachers.find(t => t.id === grp?.teacherId || t.name === rec.recordedBy);
                         const isPres = rec.status === 'present';
+                        const subjectTitle = rec.subjectName || grp?.subject || tch?.subject || 'حصة دراسية';
+                        const sessionSubLabel = rec.sessionLabel || grp?.name;
+                        const displayDate = rec.sessionDate || session?.date || rec.recordedAt;
+                        const displayTime = rec.recordedAt
+                          ? new Date(rec.recordedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+                          : '';
 
                         return (
                           <div
                             key={rec.id}
-                            className={`p-3.5 rounded-2xl border flex items-center justify-between text-xs transition-colors ${
+                            className={`p-3.5 rounded-2xl border flex items-center justify-between gap-2 text-xs transition-colors ${
                               isPres
                                 ? 'bg-emerald-50/40 border-emerald-200'
                                 : 'bg-rose-50/70 border-rose-300'
                             }`}
                           >
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
                               <div
                                 className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold shrink-0 ${
                                   isPres
@@ -243,13 +264,19 @@ export const ParentDashboard: React.FC<Props> = ({
                               >
                                 {isPres ? <CheckCircle2 className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
                               </div>
-                              <div>
-                                <h4 className="font-bold text-slate-900">
-                                  {grp?.subject || tch?.subject || 'حصة دراسية'} {grp?.name ? `(${grp.name})` : ''}
-                                </h4>
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-600">
+                                    #{idx + 1}
+                                  </span>
+                                  <h4 className="font-bold text-slate-900">
+                                    {subjectTitle} {sessionSubLabel && sessionSubLabel !== subjectTitle ? `(${sessionSubLabel})` : ''}
+                                  </h4>
+                                </div>
                                 <p className="text-[11px] text-slate-500 mt-0.5">
-                                  {session ? formatArabicDate(session.date) : formatArabicDate(rec.recordedAt)} • المعلم: {rec.recordedBy}
-                                  {tch?.subject ? ` (${tch.subject})` : ''}
+                                  {formatArabicDate(displayDate)}
+                                  {displayTime ? ` • ${displayTime}` : ''} • المعلم: {rec.recordedBy}
+                                  {tch?.subject && !subjectTitle.includes(tch.subject) ? ` (${tch.subject})` : ''}
                                 </p>
                                 {rec.note && (
                                   <span className="text-[11px] text-rose-700 mt-1 block">
@@ -465,6 +492,18 @@ export const ParentDashboard: React.FC<Props> = ({
         </div>
       )}
 
+      {/* Main Tab 3: Reports (التقارير - غياب كل ابن أو كل الأبناء) */}
+      {activeNav === 'reports' && (
+        <ParentReportsView
+          parentName={resolvedParentName}
+          childrenList={children}
+          attendanceRecords={attendanceRecords}
+          sessions={sessions}
+          groups={groups}
+          teachers={teachers}
+        />
+      )}
+
       {/* Main Tab 4: Settings (الإعدادات - ترس الإعدادات) */}
       {activeNav === 'settings' && (
         <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
@@ -477,8 +516,8 @@ export const ParentDashboard: React.FC<Props> = ({
       )}
 
       {/* Mobile Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 py-2 px-3 shadow-lg no-print">
-        <div className="max-w-lg mx-auto flex items-center justify-around">
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200 py-2 px-2 shadow-lg no-print">
+        <div className="max-w-xl mx-auto flex items-center justify-around">
           <button
             onClick={() => setActiveNav('children')}
             className={`flex flex-col items-center gap-1 text-[11px] font-bold transition-colors ${
@@ -487,6 +526,16 @@ export const ParentDashboard: React.FC<Props> = ({
           >
             <Users className="w-5 h-5" />
             <span>أبنائي</span>
+          </button>
+
+          <button
+            onClick={() => setActiveNav('reports')}
+            className={`flex flex-col items-center gap-1 text-[11px] font-bold transition-colors ${
+              activeNav === 'reports' ? 'text-[#1F4E8C]' : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <FileText className="w-5 h-5" />
+            <span>التقارير</span>
           </button>
 
           <button
@@ -501,7 +550,7 @@ export const ParentDashboard: React.FC<Props> = ({
                 {upcomingTutoringCount}
               </span>
             )}
-            <span>مجموعات التقوية</span>
+            <span>التقوية</span>
           </button>
 
           <button

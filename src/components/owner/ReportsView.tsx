@@ -27,6 +27,7 @@ export const ReportsView: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [gradeFilter, setGradeFilter] = useState<string>('');
   const [classFilter, setClassFilter] = useState<string>('');
+  const [parentIdFilter, setParentIdFilter] = useState<string>('');
   const [studentIdFilter, setStudentIdFilter] = useState<string>('');
   const [studentSearch, setStudentSearch] = useState<string>('');
   const [dateFrom, setDateFrom] = useState<string>('');
@@ -41,6 +42,7 @@ export const ReportsView: React.FC = () => {
   }, []);
 
   const students = storage.getStudents();
+  const parents = storage.getParents();
   const teachers = storage.getTeachers();
   const classes = storage.getClasses();
   const groups = storage.getGroups();
@@ -65,10 +67,21 @@ export const ReportsView: React.FC = () => {
     return Array.from(nums).sort((a, b) => a - b);
   }, [classes, students, gradeFilter]);
 
-  // Students eligible for dropdown based on grade, class, and search query
+  const selectedParentObj = useMemo(
+    () => (parentIdFilter ? parents.find(p => p.id === parentIdFilter) : undefined),
+    [parents, parentIdFilter]
+  );
+
+  // Students eligible for dropdown based on parent, grade, class, and search query
   const selectableStudents = useMemo(() => {
     const q = studentSearch.trim().toLowerCase();
     return students.filter(s => {
+      if (parentIdFilter) {
+        const matchesParent =
+          s.parentId === parentIdFilter ||
+          (selectedParentObj?.phone && s.parentPhone === selectedParentObj.phone);
+        if (!matchesParent) return false;
+      }
       if (gradeFilter && s.grade !== gradeFilter) return false;
       if (classFilter && String(s.classNumber) !== classFilter) return false;
       if (q) {
@@ -80,7 +93,7 @@ export const ReportsView: React.FC = () => {
       }
       return true;
     });
-  }, [students, gradeFilter, classFilter, studentSearch]);
+  }, [students, parentIdFilter, selectedParentObj, gradeFilter, classFilter, studentSearch]);
 
   const selectedStudentObj = useMemo(
     () => (studentIdFilter ? students.find(s => s.id === studentIdFilter) : undefined),
@@ -99,10 +112,16 @@ export const ReportsView: React.FC = () => {
     setStudentIdFilter('');
   };
 
+  const handleParentChange = (val: string) => {
+    setParentIdFilter(val);
+    setStudentIdFilter('');
+  };
+
   const handleResetFilters = () => {
     setStatusFilter('all');
     setGradeFilter('');
     setClassFilter('');
+    setParentIdFilter('');
     setStudentIdFilter('');
     setStudentSearch('');
     setDateFrom('');
@@ -118,11 +137,19 @@ export const ReportsView: React.FC = () => {
         const st = students.find(s => s.id === a.studentId);
         const ses = sessions.find(s => s.id === a.sessionId);
         const grp = ses ? groups.find(g => g.id === ses.groupId) : null;
-        const recordDate = ses?.date || a.recordedAt.substring(0, 10);
-        return { a, st, ses, grp, recordDate };
+        const tch = teachers.find(t => t.id === grp?.teacherId || t.name === a.recordedBy);
+        const recordDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
+        const subjectDisplay = a.subjectName || grp?.subject || tch?.subject || a.sessionLabel || '-';
+        return { a, st, ses, grp, recordDate, subjectDisplay };
       })
       .filter(({ a, st, recordDate }) => {
         if (statusFilter !== 'all' && a.status !== statusFilter) return false;
+        if (parentIdFilter) {
+          const matchesParent =
+            st?.parentId === parentIdFilter ||
+            (selectedParentObj?.phone && st?.parentPhone === selectedParentObj.phone);
+          if (!matchesParent) return false;
+        }
         if (gradeFilter && st?.grade !== gradeFilter) return false;
         if (classFilter && String(st?.classNumber ?? '') !== classFilter) return false;
         if (studentIdFilter && a.studentId !== studentIdFilter) return false;
@@ -136,13 +163,23 @@ export const ReportsView: React.FC = () => {
         if (dateTo && recordDate > dateTo) return false;
         return true;
       })
-      .sort((x, y) => y.recordDate.localeCompare(x.recordDate));
-  }, [attendance, students, sessions, groups, statusFilter, gradeFilter, classFilter, studentIdFilter, studentSearch, dateFrom, dateTo]);
+      .sort((x, y) => {
+        const dateCmp = y.recordDate.localeCompare(x.recordDate);
+        if (dateCmp !== 0) return dateCmp;
+        return x.a.recordedAt.localeCompare(y.a.recordedAt);
+      });
+  }, [attendance, students, sessions, groups, teachers, statusFilter, parentIdFilter, selectedParentObj, gradeFilter, classFilter, studentIdFilter, studentSearch, dateFrom, dateTo]);
 
   // Filtered Students (used by students report & chronic absence report)
   const filteredStudents = useMemo(() => {
     const q = studentSearch.trim().toLowerCase();
     return students.filter(st => {
+      if (parentIdFilter) {
+        const matchesParent =
+          st.parentId === parentIdFilter ||
+          (selectedParentObj?.phone && st.parentPhone === selectedParentObj.phone);
+        if (!matchesParent) return false;
+      }
       if (gradeFilter && st.grade !== gradeFilter) return false;
       if (classFilter && String(st.classNumber) !== classFilter) return false;
       if (studentIdFilter && st.id !== studentIdFilter) return false;
@@ -154,7 +191,7 @@ export const ReportsView: React.FC = () => {
       }
       return true;
     });
-  }, [students, gradeFilter, classFilter, studentIdFilter, studentSearch]);
+  }, [students, parentIdFilter, selectedParentObj, gradeFilter, classFilter, studentIdFilter, studentSearch]);
 
   // Chronic / Student Absence Summary Rows
   const absenceSummaryRows = useMemo(() => {
@@ -163,7 +200,7 @@ export const ReportsView: React.FC = () => {
         const stRecords = attendance.filter(a => {
           if (a.studentId !== st.id) return false;
           const ses = sessions.find(s => s.id === a.sessionId);
-          const recordDate = ses?.date || a.recordedAt.substring(0, 10);
+          const recordDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
           if (dateFrom && recordDate < dateFrom) return false;
           if (dateTo && recordDate > dateTo) return false;
           return true;
@@ -207,17 +244,22 @@ export const ReportsView: React.FC = () => {
           : 'حالة السجل: الحضور والغياب'
       );
     }
+    if (selectedParentObj) {
+      parts.push(`ولي الأمر: ${selectedParentObj.displayName}`);
+    }
     if (gradeFilter) parts.push(`الصف: ${gradeFilter}`);
     if (classFilter) parts.push(`الفصل: ${classFilter}`);
     if (selectedStudentObj) {
       parts.push(`الطالب: ${selectedStudentObj.name} (${selectedStudentObj.code})`);
+    } else if (selectedParentObj) {
+      parts.push('كل أبناء ولي الأمر');
     } else if (studentSearch.trim()) {
       parts.push(`بحث طالب: "${studentSearch.trim()}"`);
     }
     if (dateFrom) parts.push(`من: ${formatArabicDate(dateFrom)}`);
     if (dateTo) parts.push(`إلى: ${formatArabicDate(dateTo)}`);
     return parts;
-  }, [reportType, statusFilter, gradeFilter, classFilter, selectedStudentObj, studentSearch, dateFrom, dateTo]);
+  }, [reportType, statusFilter, selectedParentObj, gradeFilter, classFilter, selectedStudentObj, studentSearch, dateFrom, dateTo]);
 
   const handleIssueReport = () => {
     setIssuedAt(new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }));
@@ -239,13 +281,13 @@ export const ReportsView: React.FC = () => {
           : statusFilter === 'present'
           ? 'تقرير الحضور'
           : 'تقرير الحضور والغياب';
-      data = filteredAttendance.map(({ a, st, grp, recordDate }) => ({
+      data = filteredAttendance.map(({ a, st, grp, recordDate, subjectDisplay }) => ({
         'اسم الطالب': st?.name || '',
         'كود الطالب': st?.code || '',
         'الصف الدراسي': st?.grade || '',
         'الفصل': st?.classNumber ? `فصل ${st.classNumber}` : '',
-        'المادة': grp?.subject || '',
-        'المجموعة': grp?.name || '',
+        'المادة / الحصة': subjectDisplay,
+        'المجموعة / رقم الحصة': a.sessionLabel || grp?.name || '',
         'التاريخ': recordDate,
         'الحالة': a.status === 'present' ? 'حاضر' : 'غائب',
         'المعلم الراصد': a.recordedBy
@@ -461,11 +503,32 @@ export const ReportsView: React.FC = () => {
             </div>
           )}
 
+          {/* Parent Filter (Report per parent's child or all children) */}
+          {(reportType === 'attendance' || reportType === 'chronic_absence' || reportType === 'students') && (
+            <div>
+              <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                ولي الأمر (تقرير ابن أو كل الأبناء)
+              </label>
+              <select
+                value={parentIdFilter}
+                onChange={(e) => handleParentChange(e.target.value)}
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white outline-hidden focus:border-[#1F4E8C]"
+              >
+                <option value="">كل أولياء الأمور ({parents.length})</option>
+                {parents.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.displayName} ({p.phone})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Student Search + Specific Student Picker */}
           {(reportType === 'attendance' || reportType === 'chronic_absence' || reportType === 'students') && (
             <div className="sm:col-span-2 lg:col-span-1">
               <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                طالب معين (بحث أو اختيار)
+                طالب / ابن معين (أو كل الأبناء)
               </label>
               <div className="flex gap-1.5">
                 <div className="relative w-1/2">
@@ -486,7 +549,9 @@ export const ReportsView: React.FC = () => {
                   onChange={(e) => setStudentIdFilter(e.target.value)}
                   className="w-1/2 px-2.5 py-2 text-xs rounded-xl border border-slate-300 bg-white outline-hidden focus:border-[#1F4E8C]"
                 >
-                  <option value="">كل الطلاب ({selectableStudents.length})</option>
+                  <option value="">
+                    {parentIdFilter ? `كل أبناء ولي الأمر (${selectableStudents.length})` : `كل الطلاب (${selectableStudents.length})`}
+                  </option>
                   {selectableStudents.map(st => (
                     <option key={st.id} value={st.id}>
                       {st.name} ({st.code})
@@ -624,14 +689,19 @@ export const ReportsView: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredAttendance.map(({ a, st, grp, recordDate }) => (
+                    filteredAttendance.map(({ a, st, recordDate, subjectDisplay }) => (
                       <tr key={a.id} className="hover:bg-slate-50">
                         <td className="p-2.5 font-bold text-slate-900">{st?.name || 'غير معروف'}</td>
                         <td className="p-2.5 font-mono text-slate-600">{st?.code || '-'}</td>
                         <td className="p-2.5 text-slate-600">
                           {st ? `${st.grade} - فصل ${st.classNumber}` : '-'}
                         </td>
-                        <td className="p-2.5">{grp?.subject || '-'}</td>
+                        <td className="p-2.5">
+                          <span className="font-semibold text-slate-800">{subjectDisplay}</span>
+                          {a.sessionLabel && a.sessionLabel !== subjectDisplay && (
+                            <span className="block text-[10px] text-slate-500">{a.sessionLabel}</span>
+                          )}
+                        </td>
                         <td className="p-2.5 text-slate-500">{formatArabicDate(recordDate)}</td>
                         <td className="p-2.5">
                           <span

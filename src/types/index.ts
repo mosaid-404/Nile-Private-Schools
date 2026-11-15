@@ -97,6 +97,11 @@ export interface AttendanceRecord {
   note?: string; // e.g. "استأذن مسبقاً"
   recordedAt: string;
   recordedBy: string;
+  subjectName?: string;
+  sessionLabel?: string;
+  sessionDate?: string;
+  grade?: string;
+  classNumber?: number;
   history?: {
     status: 'present' | 'absent';
     changedAt: string;
