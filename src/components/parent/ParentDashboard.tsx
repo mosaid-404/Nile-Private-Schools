@@ -101,8 +101,31 @@ export const ParentDashboard: React.FC<Props> = ({
     tg => tg.date >= todayStr && tg.studentIds.some(id => children.some(c => c.id === id))
   ).length;
 
+  const matchedParent = storage.getParents().find(
+    p =>
+      p.userId === currentUser.id ||
+      p.id === currentUser.relatedId ||
+      (currentUser.phone && p.phone === currentUser.phone)
+  );
+  const resolvedParentName = matchedParent?.displayName || currentUser.displayName || currentUser.username;
+
   return (
     <div className="max-w-4xl mx-auto px-3 sm:px-6 py-6 pb-24 space-y-6">
+      {/* Parent Welcome Header */}
+      <div className="bg-white rounded-3xl p-4 sm:p-5 shadow-xs border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 className="text-base sm:text-lg font-extrabold text-[#163A6B] leading-snug">
+            مرحباً بك، {resolvedParentName}
+          </h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {formatArabicDate(todayStr)} • متابعة حضور الأبناء والإشعارات
+          </p>
+        </div>
+        <span className="self-start sm:self-center text-[11px] font-bold px-3 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200/70 shrink-0">
+          حساب ولي الأمر
+        </span>
+      </div>
+
       {/* Top Child Selector in grid boxes if multiple children exist */}
       {children.length > 1 && (
         <div className="bg-white rounded-2xl p-3 shadow-xs border border-slate-200 space-y-2">
@@ -122,7 +145,7 @@ export const ParentDashboard: React.FC<Props> = ({
               <button
                 key={child.id}
                 onClick={() => setSelectedChildId(child.id)}
-                className={`p-2.5 rounded-xl text-xs font-bold text-center border truncate transition-all ${
+                className={`p-2.5 rounded-xl text-xs font-bold text-center border leading-snug transition-all ${
                   selectedChildId === child.id
                     ? 'bg-[#1F4E8C] text-white border-[#1F4E8C] shadow-xs'
                     : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'

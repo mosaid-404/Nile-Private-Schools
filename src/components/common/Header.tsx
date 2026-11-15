@@ -69,16 +69,39 @@ export const Header: React.FC<Props> = ({
     parent: { label: 'ولي أمر', bg: 'bg-amber-100', text: 'text-amber-800' }
   };
 
+  const teachersList = storage.getTeachers();
+  const parentsList = storage.getParents();
+  const matchedTeacher =
+    currentUser.role === 'teacher'
+      ? teachersList.find(t => t.userId === currentUser.id || t.id === currentUser.relatedId)
+      : undefined;
+  const matchedParent =
+    currentUser.role === 'parent'
+      ? parentsList.find(
+          p =>
+            p.userId === currentUser.id ||
+            p.id === currentUser.relatedId ||
+            (currentUser.phone && p.phone === currentUser.phone)
+        )
+      : undefined;
+
+  const resolvedDisplayName =
+    currentUser.role === 'owner'
+      ? currentUser.displayName || 'الادمن'
+      : currentUser.role === 'teacher'
+      ? matchedTeacher?.name || currentUser.displayName || currentUser.username
+      : matchedParent?.displayName || currentUser.displayName || currentUser.username;
+
   const currentRoleInfo = roleLabels[currentUser.role] || roleLabels.owner;
   const allUsers = storage.getUsers().filter(u => u.role !== 'secretary');
 
   return (
     <>
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-xs no-print">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-2">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 min-h-16 py-2 flex items-center justify-between gap-2 sm:gap-4">
           {/* School Brand */}
-          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-            <div className="w-11 h-11 rounded-xl bg-[#011242] flex items-center justify-center shadow-sm shrink-0 overflow-hidden border border-[#1F4E8C]/20">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 shrink">
+            <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-[#011242] flex items-center justify-center shadow-sm shrink-0 overflow-hidden border border-[#1F4E8C]/20">
               <img src={schoolSettings.logoUrl || '/icons/app-logo.png'} alt="شعار المدرسة" className="w-full h-full object-cover" />
             </div>
             <div className="min-w-0">
@@ -86,7 +109,7 @@ export const Header: React.FC<Props> = ({
                 <span className="font-extrabold text-[#163A6B] text-sm sm:text-base leading-none truncate">{schoolSettings.schoolName}</span>
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-blue-100 text-[#1F4E8C] shrink-0">NPS</span>
               </div>
-              <p className="text-[11px] text-slate-500 hidden sm:block">نظام إدارة المدارس والحضور والإشعارات</p>
+              <p className="text-[11px] text-slate-500 hidden lg:block">نظام إدارة المدارس والحضور والإشعارات</p>
             </div>
           </div>
 
@@ -99,11 +122,11 @@ export const Header: React.FC<Props> = ({
             {currentUser.role !== 'owner' && (
               <button
                 onClick={() => setShowNotifications(true)}
-                className="relative p-2.5 rounded-xl bg-blue-50 text-[#1F4E8C] hover:bg-blue-100 border border-blue-200/70 transition-colors flex items-center gap-1.5"
+                className="relative p-2.5 rounded-xl bg-blue-50 text-[#1F4E8C] hover:bg-blue-100 border border-blue-200/70 transition-colors flex items-center gap-1.5 shrink-0"
                 title="الإشعارات"
               >
                 <Bell className="w-5 h-5" />
-                <span className="hidden sm:inline text-xs font-bold">الإشعارات</span>
+                <span className="hidden md:inline text-xs font-bold">الإشعارات</span>
                 {unreadCount > 0 && (
                   <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] flex items-center justify-center px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold shadow-xs">
                     {unreadCount}
@@ -112,18 +135,15 @@ export const Header: React.FC<Props> = ({
               </button>
             )}
 
-            {/* User Profile Pill */}
-            <div className="flex items-center gap-2 pr-2 border-r border-slate-200">
-              <div className="text-right flex flex-col justify-center">
-                <p className="text-xs font-bold text-slate-800 leading-tight truncate max-w-[100px] sm:max-w-[140px]">
-                  {currentUser.displayName || (currentUser.role === 'owner' ? 'الادمن' : currentUser.username)}
+            {/* User Profile Pill (Full Name without truncation on sm+) */}
+            <div className="flex items-center gap-2 sm:pr-3 sm:border-r sm:border-slate-200">
+              <div className="hidden sm:flex flex-col justify-center items-end text-right">
+                <p className="text-xs sm:text-sm font-extrabold text-slate-800 leading-snug whitespace-normal">
+                  {resolvedDisplayName}
                 </p>
-                <span className={`inline-block text-[10px] font-bold px-1.5 py-0.2 rounded ${currentRoleInfo.bg} ${currentRoleInfo.text} truncate max-w-[90px] sm:max-w-none`}>
+                <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded ${currentRoleInfo.bg} ${currentRoleInfo.text} whitespace-nowrap`}>
                   {currentRoleInfo.label}
-                  {currentUser.role === 'teacher' && (() => {
-                    const tch = storage.getTeachers().find(t => t.userId === currentUser.id || t.id === currentUser.relatedId);
-                    return tch?.subject ? ` • ${tch.subject}` : '';
-                  })()}
+                  {currentUser.role === 'teacher' && matchedTeacher?.subject ? ` • ${matchedTeacher.subject}` : ''}
                 </span>
               </div>
 
@@ -179,9 +199,9 @@ export const Header: React.FC<Props> = ({
                                   setSwitchSearch('');
                                   onSwitchUser(u);
                                 }}
-                                className="w-full px-3 py-2 text-xs flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
+                                className="w-full px-3 py-2 text-xs flex items-center justify-between gap-2 hover:bg-slate-50 transition-colors text-right"
                               >
-                                <span className="font-semibold text-slate-800 truncate max-w-[160px]">{dispName}</span>
+                                <span className="font-semibold text-slate-800 leading-snug text-right">{dispName}</span>
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
                                   {roleLabels[u.role]?.label || u.role}
                                 </span>
@@ -226,6 +246,17 @@ export const Header: React.FC<Props> = ({
               )}
             </div>
           </div>
+        </div>
+
+        {/* Mobile Full Name & Role Strip so long teacher/parent names appear completely */}
+        <div className="sm:hidden border-t border-slate-100 bg-slate-50/90 px-3 py-1.5 flex items-center justify-between gap-2">
+          <p className="text-xs font-extrabold text-slate-800 leading-snug">
+            {resolvedDisplayName}
+          </p>
+          <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded shrink-0 ${currentRoleInfo.bg} ${currentRoleInfo.text}`}>
+            {currentRoleInfo.label}
+            {currentUser.role === 'teacher' && matchedTeacher?.subject ? ` • ${matchedTeacher.subject}` : ''}
+          </span>
         </div>
       </header>
 

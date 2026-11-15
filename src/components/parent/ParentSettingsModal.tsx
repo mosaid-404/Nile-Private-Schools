@@ -53,6 +53,14 @@ export const ParentSettingsContent: React.FC<ContentProps> = ({
     }
   ];
 
+  const matchedParent = storage.getParents().find(
+    p =>
+      p.userId === currentUser.id ||
+      p.id === currentUser.relatedId ||
+      (currentUser.phone && p.phone === currentUser.phone)
+  );
+  const resolvedName = matchedParent?.displayName || currentUser.displayName || currentUser.username;
+
   return (
     <div className="space-y-4">
       {showProfileHeader && (
@@ -60,8 +68,8 @@ export const ParentSettingsContent: React.FC<ContentProps> = ({
           <div className="w-12 h-12 rounded-2xl bg-blue-50 text-[#1F4E8C] flex items-center justify-center shrink-0 border border-blue-100">
             <Settings className="w-6 h-6" />
           </div>
-          <div>
-            <h2 className="text-base sm:text-lg font-extrabold text-slate-900">{currentUser.displayName}</h2>
+          <div className="min-w-0">
+            <h2 className="text-base sm:text-lg font-extrabold text-slate-900 leading-snug">{resolvedName}</h2>
             <p className="text-xs text-slate-500 font-mono mt-0.5">رقم الهاتف: {currentUser.phone}</p>
           </div>
         </div>

@@ -96,8 +96,8 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-extrabold text-[#163A6B]">
-                مرحباً بك، {currentUser.displayName}
+              <h1 className="text-lg sm:text-2xl font-extrabold text-[#163A6B] leading-snug">
+                مرحباً بك، {currentTeacher?.name || currentUser.displayName}
               </h1>
               {currentTeacher?.subject && (
                 <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold">
