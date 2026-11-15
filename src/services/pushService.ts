@@ -16,9 +16,18 @@ export interface PushSupportInfo {
   requiresIOSHomeScreenInstall: boolean;
 }
 
+interface VapidKeyFetchResult {
+  ok: boolean;
+  publicKey?: string;
+  keyBytes?: Uint8Array;
+  code?: string;
+  message?: string;
+}
+
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const cleaned = base64String.trim();
+  const padding = '='.repeat((4 - (cleaned.length % 4)) % 4);
+  const base64 = (cleaned + padding).replace(/-/g, '+').replace(/_/g, '/');
   const rawData = window.atob(base64);
   const outputArray = new Uint8Array(rawData.length);
   for (let i = 0; i < rawData.length; ++i) {
@@ -75,9 +84,12 @@ export async function getActiveServiceWorkerRegistration(): Promise<ServiceWorke
   if (!cachedSwRegistrationPromise) {
     cachedSwRegistrationPromise = navigator.serviceWorker
       .register('/sw.js', { updateViaCache: 'none' })
-      .then(async () => navigator.serviceWorker.ready)
+      .then(async (reg) => {
+        void reg.update().catch(() => {});
+        return navigator.serviceWorker.ready;
+      })
       .catch((err) => {
-        console.warn('Service Worker registration failed:', err);
+        console.warn('[WebPush] Service Worker registration failed:', err);
         cachedSwRegistrationPromise = null;
         return null;
       });
@@ -96,10 +108,114 @@ export async function getCurrentPushEndpoint(): Promise<string | null> {
   }
 }
 
+export async function fetchVapidPublicKey(): Promise<VapidKeyFetchResult> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const res = await fetch('/api/push/vapid-public-key', {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    });
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('application/json')) {
+      console.error(
+        `[WebPush] Invalid content-type from /api/push/vapid-public-key: status=${res.status}, contentType=${contentType}`
+      );
+      return {
+        ok: false,
+        code: 'API_RETURNED_NON_JSON',
+        message:
+          res.status === 404
+            ? 'مسار الـ API الخاص بمفتاح الإشعارات (/api/push/vapid-public-key) غير موجود (404).'
+            : 'الخادم أعاد صفحة HTML بدلاً من JSON عند طلب مفتاح الإشعارات — تأكد من تشغيل خادم Node/Express (server.ts).'
+      };
+    }
+
+    const data = (await res.json()) as {
+      ok?: boolean;
+      publicKey?: string;
+      code?: string;
+      error?: string;
+      details?: string;
+    };
+
+    if (!res.ok) {
+      console.error('[WebPush] Backend returned error for VAPID key:', res.status, data);
+      if (res.status === 404 || data.code === 'API_ROUTE_NOT_FOUND') {
+        return {
+          ok: false,
+          code: data.code || 'API_ROUTE_NOT_FOUND',
+          message: 'مسار الـ API (/api/push/vapid-public-key) غير موجود على الخادم (404).'
+        };
+      }
+      if (data.code === 'VAPID_ENV_PARTIAL' || data.code === 'VAPID_ENV_INVALID') {
+        return {
+          ok: false,
+          code: data.code,
+          message: data.error || 'مفاتيح VAPID غير مهيأة بشكل صحيح في متغيرات البيئة (Environment Variables).'
+        };
+      }
+      return {
+        ok: false,
+        code: data.code || `HTTP_${res.status}`,
+        message: data.error
+          ? `خطأ الخادم (${res.status}): ${data.error}`
+          : `تعذر الحصول على مفتاح الإشعارات من الخادم (كود ${res.status}).`
+      };
+    }
+
+    const publicKey = data.publicKey?.trim();
+    if (!publicKey) {
+      console.error('[WebPush] Empty publicKey received from server:', data);
+      return {
+        ok: false,
+        code: 'EMPTY_VAPID_KEY',
+        message: 'الخادم لم يُرجع مفتاح VAPID العام (قيمة فارغة).'
+      };
+    }
+
+    try {
+      const keyBytes = urlBase64ToUint8Array(publicKey);
+      if (keyBytes.length !== 65 || keyBytes[0] !== 0x04) {
+        console.error('[WebPush] Invalid VAPID public key byte length:', keyBytes.length);
+        return {
+          ok: false,
+          code: 'INVALID_VAPID_KEY_FORMAT',
+          message: 'مفتاح VAPID العام المستلم من الخادم بصيغة غير صالحة.'
+        };
+      }
+      return { ok: true, publicKey, keyBytes };
+    } catch (decodeErr) {
+      console.error('[WebPush] Failed decoding VAPID public key:', decodeErr);
+      return {
+        ok: false,
+        code: 'INVALID_VAPID_KEY_FORMAT',
+        message: 'تعذر فك تشفير مفتاح VAPID العام المستلم من الخادم.'
+      };
+    }
+  } catch (err) {
+    const isAbort = err instanceof DOMException && err.name === 'AbortError';
+    console.error('[WebPush] Network error fetching VAPID public key:', err);
+    return {
+      ok: false,
+      code: isAbort ? 'VAPID_FETCH_TIMEOUT' : 'VAPID_NETWORK_ERROR',
+      message: isAbort
+        ? 'انتهت مهلة الاتصال بالخادم أثناء جلب مفتاح الإشعارات.'
+        : 'تعذر الاتصال بالخادم لجلب مفتاح الإشعارات. تأكد من اتصالك بالإنترنت ومن تشغيل الخادم.'
+    };
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 export async function ensurePushSubscription(
   user: User,
   requestPermissionIfDefault = false
-): Promise<{ status: PushRegistrationStatus; endpoint?: string; message?: string }> {
+): Promise<{ status: PushRegistrationStatus; endpoint?: string; message?: string; code?: string }> {
   if (!user || user.role === 'owner') {
     return { status: 'default' };
   }
@@ -138,21 +254,26 @@ export async function ensurePushSubscription(
   try {
     const reg = await getActiveServiceWorkerRegistration();
     if (!reg || !reg.pushManager) {
-      return { status: 'unsupported' };
+      return {
+        status: 'unsupported',
+        message: 'ملف Service Worker غير نشط حالياً. أعد تحميل الصفحة وحاول مجدداً.'
+      };
     }
 
-    const keyRes = await fetch('/api/push/vapid-public-key');
-    if (!keyRes.ok) {
-      return { status: 'error', message: 'تعذر الحصول على مفتاح الإشعارات من الخادم.' };
-    }
-    const { publicKey } = (await keyRes.json()) as { publicKey?: string };
-    if (!publicKey) {
-      return { status: 'error', message: 'مفتاح الإشعارات غير متاح حالياً.' };
+    // 1. Fetch & validate VAPID public key securely BEFORE calling pushManager.subscribe
+    const keyResult = await fetchVapidPublicKey();
+    if (!keyResult.ok || !keyResult.keyBytes) {
+      return {
+        status: 'error',
+        code: keyResult.code,
+        message: keyResult.message || 'تعذر الحصول على مفتاح الإشعارات من الخادم.'
+      };
     }
 
-    const expectedKeyBytes = urlBase64ToUint8Array(publicKey);
+    const expectedKeyBytes = keyResult.keyBytes;
     let subscription = await reg.pushManager.getSubscription();
 
+    // Re-subscribe if existing subscription uses an outdated/different VAPID key
     if (subscription?.options?.applicationServerKey) {
       const existingBytes = new Uint8Array(subscription.options.applicationServerKey);
       if (!uint8ArraysEqual(existingBytes, expectedKeyBytes)) {
@@ -161,11 +282,38 @@ export async function ensurePushSubscription(
       }
     }
 
+    // 2. Subscribe with validated applicationServerKey
     if (!subscription) {
-      subscription = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: expectedKeyBytes.buffer as ArrayBuffer
-      });
+      try {
+        subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: expectedKeyBytes.buffer as ArrayBuffer
+        });
+      } catch (subErr: unknown) {
+        const errName = subErr instanceof Error ? subErr.name : '';
+        if (errName === 'InvalidStateError') {
+          // Clear stale subscription and retry once
+          const stale = await reg.pushManager.getSubscription().catch(() => null);
+          if (stale) await stale.unsubscribe().catch(() => {});
+          subscription = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: expectedKeyBytes.buffer as ArrayBuffer
+          });
+        } else if (errName === 'NotAllowedError') {
+          return {
+            status: 'denied',
+            code: 'PUSH_PERMISSION_DENIED',
+            message: 'تم رفض إذن إشعارات الخلفية من المتصفح أو إعدادات الهاتف.'
+          };
+        } else {
+          console.error('[WebPush] pushManager.subscribe failed:', subErr);
+          return {
+            status: 'error',
+            code: errName || 'PUSH_SUBSCRIBE_FAILED',
+            message: 'تعذر تسجيل الجهاز في خدمة إشعارات المتصفح. تأكد من فتح التطبيق عبر HTTPS.'
+          };
+        }
+      }
     }
 
     const subJson = subscription.toJSON();
@@ -189,16 +337,26 @@ export async function ensurePushSubscription(
     });
 
     if (!saveRes.ok) {
-      return { status: 'error', message: 'تعذر حفظ اشتراك إشعارات الهاتف على الخادم.' };
+      const errBody = (await saveRes.json().catch(() => ({}))) as { error?: string };
+      console.error('[WebPush] Failed saving subscription:', saveRes.status, errBody);
+      return {
+        status: 'error',
+        code: `SUBSCRIBE_HTTP_${saveRes.status}`,
+        message: errBody.error || 'تعذر حفظ اشتراك إشعارات الهاتف على الخادم.'
+      };
     }
 
     window.dispatchEvent(new Event('nps_push_status_changed'));
     return { status: 'subscribed', endpoint: subscription.endpoint };
   } catch (err) {
-    console.warn('Push subscription setup error:', err);
+    console.error('[WebPush] Unexpected subscription setup error:', err);
     return {
       status: 'error',
-      message: 'حدث خطأ أثناء تفعيل إشعارات الخلفية على هذا الجهاز.'
+      code: 'PUSH_SETUP_EXCEPTION',
+      message:
+        err instanceof Error
+          ? `حدث خطأ غير متوقع أثناء تفعيل الإشعارات: ${err.message}`
+          : 'حدث خطأ أثناء تفعيل إشعارات الخلفية على هذا الجهاز.'
     };
   }
 }
@@ -260,7 +418,7 @@ export async function sendTestWebPush(user: User): Promise<{ ok: boolean; messag
         phone: user.phone
       })
     });
-    const data = (await res.json()) as { ok?: boolean; error?: string };
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!res.ok || !data.ok) {
       return { ok: false, message: data.error || 'تعذر إرسال الإشعار التجريبي.' };
     }

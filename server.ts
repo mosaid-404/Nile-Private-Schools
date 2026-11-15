@@ -88,12 +88,44 @@ try {
 }
 
 let cachedVapidKeys: VapidKeys | null = null;
+let cachedVapidSource: 'env' | 'firestore' | 'generated' | null = null;
+let vapidInitPromise: Promise<VapidKeys> | null = null;
 let cachedSubscriptions: StoredPushSubscription[] = [];
 let subscriptionsLoaded = false;
 
+class VapidConfigError extends Error {
+  code: string;
+  details?: string;
+  constructor(code: string, message: string, details?: string) {
+    super(message);
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function isValidVapidPublicKeyFormat(publicKey: string): boolean {
+  try {
+    const padding = '='.repeat((4 - (publicKey.length % 4)) % 4);
+    const base64 = (publicKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = Buffer.from(base64, 'base64');
+    return decoded.length === 65 && decoded[0] === 0x04;
+  } catch {
+    return false;
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    )
+  ]);
+}
+
 async function readStoreValue<T>(key: string, fallback: T): Promise<T> {
   try {
-    const snap = await getDoc(doc(db, 'nps_store', key));
+    const snap = await withTimeout(getDoc(doc(db, 'nps_store', key)), 3500, `read:${key}`);
     if (snap.exists()) {
       const val = snap.data()?.value;
       if (typeof val === 'string') {
@@ -108,10 +140,14 @@ async function readStoreValue<T>(key: string, fallback: T): Promise<T> {
 
 async function writeStoreValue<T>(key: string, data: T): Promise<void> {
   try {
-    await setDoc(doc(db, 'nps_store', key), {
-      value: JSON.stringify(data),
-      updatedAt: new Date().toISOString()
-    });
+    await withTimeout(
+      setDoc(doc(db, 'nps_store', key), {
+        value: JSON.stringify(data),
+        updatedAt: new Date().toISOString()
+      }),
+      3500,
+      `write:${key}`
+    );
   } catch (err) {
     console.warn(`Failed writing nps_store/${key} to Firestore:`, err);
   }
@@ -119,34 +155,71 @@ async function writeStoreValue<T>(key: string, data: T): Promise<void> {
 
 async function ensureVapidKeys(): Promise<VapidKeys> {
   if (cachedVapidKeys) return cachedVapidKeys;
+  if (vapidInitPromise) return vapidInitPromise;
 
-  const envPub = process.env.VAPID_PUBLIC_KEY?.trim();
-  const envPriv = process.env.VAPID_PRIVATE_KEY?.trim();
-  if (envPub && envPriv) {
-    cachedVapidKeys = { publicKey: envPub, privateKey: envPriv };
-    webpush.setVapidDetails('mailto:admin@nps-school.app', envPub, envPriv);
+  vapidInitPromise = (async () => {
+    const subject = process.env.VAPID_SUBJECT?.trim() || 'mailto:admin@nps-school.app';
+    const envPub = process.env.VAPID_PUBLIC_KEY?.trim() || '';
+    const envPriv = process.env.VAPID_PRIVATE_KEY?.trim() || '';
+
+    if ((envPub && !envPriv) || (!envPub && envPriv)) {
+      throw new VapidConfigError(
+        'VAPID_ENV_PARTIAL',
+        'متغيرات البيئة الخاصة بـ VAPID غير مكتملة: يجب ضبط VAPID_PUBLIC_KEY و VAPID_PRIVATE_KEY معاً.',
+        `hasPublicKey=${Boolean(envPub)}, hasPrivateKey=${Boolean(envPriv)}`
+      );
+    }
+
+    if (envPub && envPriv) {
+      if (!isValidVapidPublicKeyFormat(envPub)) {
+        throw new VapidConfigError(
+          'VAPID_ENV_INVALID',
+          'صيغة مفتاح VAPID_PUBLIC_KEY في متغيرات البيئة غير صالحة (يجب أن يكون Base64URL بطول 65 بايت).',
+          'Invalid P-256 uncompressed public key'
+        );
+      }
+      try {
+        webpush.setVapidDetails(subject, envPub, envPriv);
+      } catch (err) {
+        throw new VapidConfigError(
+          'VAPID_ENV_INVALID',
+          'فشل التحقق من صحة مفاتيح VAPID في متغيرات البيئة.',
+          err instanceof Error ? err.message : String(err)
+        );
+      }
+      cachedVapidKeys = { publicKey: envPub, privateKey: envPriv };
+      cachedVapidSource = 'env';
+      return cachedVapidKeys;
+    }
+
+    const fromDb = await readStoreValue<VapidKeys | null>(VAPID_DOC_KEY, null);
+    if (fromDb?.publicKey && fromDb?.privateKey && isValidVapidPublicKeyFormat(fromDb.publicKey)) {
+      try {
+        webpush.setVapidDetails(subject, fromDb.publicKey, fromDb.privateKey);
+        cachedVapidKeys = fromDb;
+        cachedVapidSource = 'firestore';
+        return cachedVapidKeys;
+      } catch (err) {
+        console.warn('Stored VAPID keys in Firestore failed validation, regenerating:', err);
+      }
+    }
+
+    const generated = webpush.generateVAPIDKeys();
+    webpush.setVapidDetails(subject, generated.publicKey, generated.privateKey);
+    cachedVapidKeys = {
+      publicKey: generated.publicKey,
+      privateKey: generated.privateKey
+    };
+    cachedVapidSource = 'generated';
+    void writeStoreValue(VAPID_DOC_KEY, cachedVapidKeys);
     return cachedVapidKeys;
-  }
+  })();
 
-  const fromDb = await readStoreValue<VapidKeys | null>(VAPID_DOC_KEY, null);
-  if (fromDb?.publicKey && fromDb?.privateKey) {
-    cachedVapidKeys = fromDb;
-    webpush.setVapidDetails('mailto:admin@nps-school.app', fromDb.publicKey, fromDb.privateKey);
-    return cachedVapidKeys;
+  try {
+    return await vapidInitPromise;
+  } finally {
+    vapidInitPromise = null;
   }
-
-  const generated = webpush.generateVAPIDKeys();
-  cachedVapidKeys = {
-    publicKey: generated.publicKey,
-    privateKey: generated.privateKey
-  };
-  await writeStoreValue(VAPID_DOC_KEY, cachedVapidKeys);
-  webpush.setVapidDetails(
-    'mailto:admin@nps-school.app',
-    cachedVapidKeys.publicKey,
-    cachedVapidKeys.privateKey
-  );
-  return cachedVapidKeys;
 }
 
 async function loadSubscriptions(forceRefresh = false): Promise<StoredPushSubscription[]> {
@@ -211,17 +284,55 @@ async function startServer() {
     next();
   });
 
+  // Prevent caching on API responses
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    next();
+  });
+
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, pushReady: Boolean(cachedVapidKeys) });
+    res.json({
+      ok: true,
+      pushReady: Boolean(cachedVapidKeys),
+      vapidSource: cachedVapidSource
+    });
   });
 
   app.get('/api/push/vapid-public-key', async (_req, res) => {
     try {
       const keys = await ensureVapidKeys();
-      res.json({ publicKey: keys.publicKey });
+      if (!keys?.publicKey || !isValidVapidPublicKeyFormat(keys.publicKey)) {
+        res.status(500).json({
+          ok: false,
+          code: 'VAPID_KEY_INVALID',
+          error: 'مفتاح VAPID العام المولّد في الخادم غير صالح.'
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        publicKey: keys.publicKey,
+        source: cachedVapidSource || 'unknown'
+      });
     } catch (err) {
-      console.error('VAPID key error:', err);
-      res.status(500).json({ error: 'Failed to load VAPID public key' });
+      if (err instanceof VapidConfigError) {
+        console.error(`[WebPush] ${err.code}: ${err.message}`, err.details || '');
+        res.status(500).json({
+          ok: false,
+          code: err.code,
+          error: err.message,
+          details: err.details
+        });
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[WebPush] VAPID_INIT_FAILED:', message);
+      res.status(500).json({
+        ok: false,
+        code: 'VAPID_INIT_FAILED',
+        error: 'فشل الخادم في تهيئة مفتاح الإشعارات العام (VAPID).',
+        details: message
+      });
     }
   });
 
@@ -484,6 +595,15 @@ async function startServer() {
       console.error('Test push error:', err);
       res.status(500).json({ ok: false, error: 'Failed to send test push' });
     }
+  });
+
+  // Explicit JSON 404 for unknown /api/* routes so they never fall through to SPA HTML
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({
+      ok: false,
+      code: 'API_ROUTE_NOT_FOUND',
+      error: `مسار API غير موجود: ${req.method} ${req.originalUrl}`
+    });
   });
 
   if (process.env.NODE_ENV !== 'production') {

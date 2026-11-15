@@ -11,7 +11,9 @@ import {
   Download,
   Upload,
   AlertTriangle,
-  RefreshCw
+  RefreshCw,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { SchoolSettings } from '../../types';
 import { storage } from '../../services/storage';
@@ -19,7 +21,12 @@ import { storage } from '../../services/storage';
 export const SettingsView: React.FC = () => {
   const [settings, setSettings] = useState<SchoolSettings>(() => storage.getSettings());
   const [savedSuccess, setSavedSuccess] = useState(false);
-  const [showDeleteDemoModal, setShowDeleteDemoModal] = useState(false);
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [showDeletePass, setShowDeletePass] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
+  const [deleteSuccessMsg, setDeleteSuccessMsg] = useState('');
 
   // Form states
   const [schoolName, setSchoolName] = useState(settings.schoolName);
@@ -115,15 +122,18 @@ export const SettingsView: React.FC = () => {
   };
 
   // Full backup JSON export
-  const handleExportBackup = () => {
+  const handleExportBackup = (prefix = 'NPS_Backup_') => {
     const data = storage.exportAllData();
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 16);
     a.href = url;
-    a.download = `NPS_Backup_${new Date().toISOString().substring(0, 10)}.json`;
+    a.download = `${prefix}${stamp}.json`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   // Restore backup
@@ -134,21 +144,54 @@ export const SettingsView: React.FC = () => {
     reader.onload = (evt) => {
       const content = evt.target?.result as string;
       if (content && storage.importAllData(content)) {
-        alert('تم استعادة النسخة الاحتياطية بنجاح!');
-        window.location.reload();
+        setDeleteSuccessMsg('تم استعادة النسخة الاحتياطية بنجاح!');
+        setTimeout(() => window.location.reload(), 600);
       } else {
-        alert('ملف النسخة الاحتياطية غير صالح.');
+        setDeleteError('ملف النسخة الاحتياطية غير صالح.');
       }
     };
     reader.readAsText(file);
   };
 
-  // Delete Demo Data (GEN-07)
-  const handleDeleteDemoData = () => {
-    storage.deleteDemoData();
-    setShowDeleteDemoModal(false);
-    alert('تم حذف كافة البيانات التجريبية بنجاح. النظام الآن نظيف وجاهز للإدخال الفعلي!');
-    window.location.reload();
+  // Open Delete All Data Modal
+  const openDeleteAllModal = () => {
+    setDeletePassword('');
+    setShowDeletePass(false);
+    setDeleteError('');
+    setShowDeleteAllModal(true);
+  };
+
+  // Delete All Existing Data (requires password confirmation + auto-downloads backup first)
+  const handleConfirmDeleteAll = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDeleteError('');
+
+    if (!deletePassword) {
+      setDeleteError('يرجى إدخال الرقم السري للتأكيد قبل الحذف.');
+      return;
+    }
+
+    if (!storage.verifyAdminPassword(deletePassword)) {
+      setDeleteError('الرقم السري غير صحيح. لم يتم حذف أي بيانات.');
+      return;
+    }
+
+    setIsDeletingAll(true);
+    try {
+      // 1. Auto-download a complete backup of current data before deleting
+      handleExportBackup('NPS_Auto_Backup_Before_Delete_');
+      await new Promise((resolve) => setTimeout(resolve, 450));
+
+      // 2. Delete all existing operational data in localStorage & Firestore
+      await storage.deleteAllExistingData();
+
+      setShowDeleteAllModal(false);
+      setDeletePassword('');
+      setDeleteSuccessMsg('تم تنزيل نسخة احتياطية كاملة تلقائياً وحذف جميع البيانات الموجودة بنجاح.');
+      setTimeout(() => setDeleteSuccessMsg(''), 7000);
+    } finally {
+      setIsDeletingAll(false);
+    }
   };
 
   return (
@@ -325,12 +368,19 @@ export const SettingsView: React.FC = () => {
         </div>
       </form>
 
-      {/* Backup, Restore & Reset Section (GEN-07) */}
+      {/* Backup, Restore & Delete All Data Section */}
       <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
         <div className="flex items-center gap-2 pb-2 border-b border-slate-100 text-slate-800 font-bold text-sm">
           <Database className="w-4 h-4 text-[#1F4E8C]" />
-          <span>النسخ الاحتياطي وإدارة البيانات التجريبية</span>
+          <span>النسخ الاحتياطي وإدارة البيانات</span>
         </div>
+
+        {deleteSuccessMsg && (
+          <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{deleteSuccessMsg}</span>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {/* Backup Export */}
@@ -340,7 +390,8 @@ export const SettingsView: React.FC = () => {
               تنزيل ملف يحتوي على كافة بيانات المدرسة، الطلاب، المعلمين، الحضور، والإيصالات.
             </p>
             <button
-              onClick={handleExportBackup}
+              type="button"
+              onClick={() => handleExportBackup()}
               className="px-4 py-2 bg-white border border-slate-300 hover:border-slate-400 text-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs"
             >
               <Download className="w-4 h-4" />
@@ -367,58 +418,96 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Delete Demo Data Button (GEN-07) */}
+        {/* Delete All Existing Data Button */}
         <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h4 className="text-xs font-bold text-rose-700">حذف البيانات التجريبية (بدء التشغيل الفعلي)</h4>
-            <p className="text-[11px] text-slate-500">
-              يقوم بمسح كافة الطلاب والمعلمين والحصص والإيصالات التجريبية بضغطة زر واحدة، مع الإبقاء على حساب المالك والإعدادات.
+            <h4 className="text-xs font-bold text-rose-700">حذف جميع البيانات الموجودة</h4>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              يمسح كافة الطلاب، المعلمين، أولياء الأمور، الفصول، الجداول، الحضور، الإشعارات، والإيصالات. يتطلب التأكيد بالرقم السري ويقوم تلقائياً بتنزيل نسخة احتياطية كاملة من البيانات قبل الحذف.
             </p>
           </div>
 
           <button
-            onClick={() => setShowDeleteDemoModal(true)}
-            className="px-4 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-300 font-bold text-xs flex items-center gap-1.5 shrink-0 transition"
+            type="button"
+            onClick={openDeleteAllModal}
+            className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 shrink-0 shadow-xs transition"
           >
             <Trash2 className="w-4 h-4" />
-            <span>حذف البيانات التجريبية بزر واحد</span>
+            <span>حذف جميع البيانات الموجودة</span>
           </button>
         </div>
       </div>
 
-      {/* Confirmation Modal for Delete Demo Data */}
-      {showDeleteDemoModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
-          <div className="bg-white rounded-3xl p-6 max-w-sm w-full text-right shadow-2xl space-y-4">
+      {/* Password Confirmation Modal for Delete All Data */}
+      {showDeleteAllModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <form
+            onSubmit={handleConfirmDeleteAll}
+            className="bg-white rounded-3xl p-6 max-w-md w-full text-right shadow-2xl space-y-4"
+          >
             <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
               <AlertTriangle className="w-6 h-6" />
             </div>
 
             <h3 className="font-bold text-base text-slate-900 text-center">
-              تأكيد حذف البيانات التجريبية
+              تأكيد حذف جميع البيانات الموجودة
             </h3>
 
-            <p className="text-xs text-slate-600 leading-relaxed text-center">
-              هل أنت متأكد من رغبتك في مسح كافة الطلاب والمعلمين والحصص والإيصالات التجريبية؟
-              <br />
-              <strong className="text-rose-700">هذا الإجراء لا يمكن التراجع عنه.</strong>
-            </p>
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-[11px] text-amber-900 space-y-1 leading-relaxed">
+              <p className="font-bold">تنبيه هام قبل التنفيذ:</p>
+              <p>• سيتم <strong>تنزيل نسخة احتياطية كاملة (JSON) تلقائياً</strong> لجميع البيانات الحالية على جهازك قبل المسح.</p>
+              <p>• سيتم حذف كافة بيانات الطلاب، المعلمين، أولياء الأمور، الحضور، الجداول، الإشعارات، والإيصالات نهائياً مع الإبقاء على حساب الإدارة وإعدادات المدرسة.</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                أدخل الرقم السري لحساب الإدارة للتأكيد:
+              </label>
+              <div className="relative">
+                <input
+                  type={showDeletePass ? 'text' : 'password'}
+                  value={deletePassword}
+                  onChange={(e) => {
+                    setDeletePassword(e.target.value);
+                    if (deleteError) setDeleteError('');
+                  }}
+                  placeholder="الرقم السري للادمن"
+                  className="w-full pr-9 pl-9 py-2.5 text-xs rounded-xl border border-slate-300 focus:border-rose-500 outline-hidden"
+                  autoFocus
+                />
+                <Lock className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
+                <button
+                  type="button"
+                  onClick={() => setShowDeletePass(!showDeletePass)}
+                  className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-600"
+                >
+                  {showDeletePass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {deleteError && (
+                <p className="text-[11px] font-bold text-rose-600 mt-1.5">{deleteError}</p>
+              )}
+            </div>
 
             <div className="flex gap-2 pt-2">
               <button
-                onClick={handleDeleteDemoData}
-                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition"
+                type="submit"
+                disabled={isDeletingAll || !deletePassword}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
               >
-                نعم، احذف وابدأ بنظام نظيف
+                <Download className="w-3.5 h-3.5" />
+                <span>{isDeletingAll ? 'جاري التنزيل والحذف...' : 'تنزيل النسخة وحذف جميع البيانات'}</span>
               </button>
               <button
-                onClick={() => setShowDeleteDemoModal(false)}
-                className="py-2.5 px-4 bg-slate-100 text-slate-700 rounded-xl text-xs font-semibold"
+                type="button"
+                disabled={isDeletingAll}
+                onClick={() => setShowDeleteAllModal(false)}
+                className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold"
               >
                 إلغاء
               </button>
             </div>
-          </div>
+          </form>
         </div>
       )}
     </div>

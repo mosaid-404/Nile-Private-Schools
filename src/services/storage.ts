@@ -468,33 +468,75 @@ class StorageService {
     this.ensureLocalDefaults();
   }
 
-  // Single button delete demo data (GEN-07)
-  public deleteDemoData(): void {
-    const users = this.getUsers().filter(u => u.role === 'owner');
-    this.set(STORAGE_KEYS.USERS, users);
-    this.set(STORAGE_KEYS.STUDENTS, []);
-    this.set(STORAGE_KEYS.PARENTS, []);
-    this.set(STORAGE_KEYS.TEACHERS, []);
-    this.set(STORAGE_KEYS.CLASSES, []);
-    this.set(STORAGE_KEYS.GROUPS, []);
-    this.set(STORAGE_KEYS.SCHEDULE_SLOTS, []);
-    this.set(STORAGE_KEYS.SESSIONS, []);
-    this.set(STORAGE_KEYS.ATTENDANCE, []);
-    this.set(STORAGE_KEYS.NOTIFICATIONS, []);
-    this.set(STORAGE_KEYS.TUTORING_GROUPS, []);
-    this.set(STORAGE_KEYS.INVOICES, []);
-    this.set(STORAGE_KEYS.PAYMENTS, []);
-    this.set(STORAGE_KEYS.RECEIPTS, []);
-    this.set(STORAGE_KEYS.OFFLINE_QUEUE, []);
+  public verifyAdminPassword(password: string): boolean {
+    if (!password) return false;
+    const current = this.getCurrentUser();
+    if (current && current.role === 'owner' && current.passwordHash === password) {
+      return true;
+    }
+    const owners = this.getUsers().filter(u => u.role === 'owner');
+    return owners.some(u => u.passwordHash === password);
+  }
+
+  // Delete all existing operational data after password verification & auto-backup
+  public async deleteAllExistingData(): Promise<void> {
+    const owners = this.getUsers().filter(u => u.role === 'owner');
+    const updates: [string, unknown][] = [
+      [STORAGE_KEYS.USERS, owners],
+      [STORAGE_KEYS.STUDENTS, []],
+      [STORAGE_KEYS.PARENTS, []],
+      [STORAGE_KEYS.TEACHERS, []],
+      [STORAGE_KEYS.CLASSES, []],
+      [STORAGE_KEYS.GROUPS, []],
+      [STORAGE_KEYS.SCHEDULE_SLOTS, []],
+      [STORAGE_KEYS.SESSIONS, []],
+      [STORAGE_KEYS.ATTENDANCE, []],
+      [STORAGE_KEYS.NOTIFICATIONS, []],
+      [STORAGE_KEYS.BROADCASTS, []],
+      [STORAGE_KEYS.TUTORING_GROUPS, []],
+      [STORAGE_KEYS.FEE_PLANS, []],
+      [STORAGE_KEYS.INVOICES, []],
+      [STORAGE_KEYS.PAYMENTS, []],
+      [STORAGE_KEYS.RECEIPTS, []],
+      [STORAGE_KEYS.AUDIT_LOGS, []],
+      [STORAGE_KEYS.OFFLINE_QUEUE, []]
+    ];
+
+    const localOnlyKeys: string[] = [
+      STORAGE_KEYS.CURRENT_USER,
+      STORAGE_KEYS.LOGIN_ATTEMPTS,
+      STORAGE_KEYS.OFFLINE_QUEUE,
+      STORAGE_KEYS.INITIALIZED
+    ];
+
+    const cloudWrites: Promise<void>[] = [];
+    for (const [key, value] of updates) {
+      const serialized = JSON.stringify(value);
+      localStorage.setItem(key, serialized);
+      if (!localOnlyKeys.includes(key)) {
+        cloudWrites.push(
+          setDoc(doc(db, 'nps_store', key), {
+            value: serialized,
+            updatedAt: new Date().toISOString()
+          }).catch((err) => {
+            logFirestoreError(err, OperationType.WRITE, `nps_store/${key}`);
+          })
+        );
+      }
+    }
+
+    await Promise.allSettled(cloudWrites);
 
     this.logAudit(
-      users[0]?.id || 'admin',
-      users[0]?.displayName || 'الادمن',
-      'حذف البيانات التجريبية',
+      owners[0]?.id || 'admin',
+      owners[0]?.displayName || 'الادمن',
+      'حذف جميع البيانات الموجودة',
       'System',
       'sys',
-      'تم حذف كافة البيانات التجريبية والبدء بنظام نظيف'
+      'تم تنزيل نسخة احتياطية تلقائية وحذف كافة البيانات الموجودة'
     );
+
+    window.dispatchEvent(new Event('nps_cloud_sync'));
   }
 
   // --- Users & Auth ---
