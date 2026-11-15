@@ -3,6 +3,7 @@ import { Settings, Bell, Shield, LogOut, CheckCircle2, X, Check } from 'lucide-r
 import { User, AttendanceNotificationPreference } from '../../types';
 import { storage } from '../../services/storage';
 import { PWAInstallButton } from '../common/PWAInstallButton';
+import { MobilePushBanner } from '../common/MobilePushBanner';
 
 interface ContentProps {
   currentUser: User;
@@ -133,6 +134,8 @@ export const ParentSettingsContent: React.FC<ContentProps> = ({
           })}
         </div>
       </div>
+
+      <MobilePushBanner currentUser={currentUser} variant="settings" />
 
       {showPWABanner && <PWAInstallButton variant="banner" />}
 

@@ -59,7 +59,7 @@ export function usePWA() {
 
     // Register Service Worker
     if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'test') {
-      navigator.serviceWorker.register('/sw.js').then((reg) => {
+      navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then((reg) => {
         reg.addEventListener('updatefound', () => {
           const newWorker = reg.installing;
           if (newWorker) {

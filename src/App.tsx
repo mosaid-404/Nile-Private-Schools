@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from './types';
 import { storage } from './services/storage';
+import { ensurePushSubscription, unregisterCurrentPushSubscription } from './services/pushService';
 import { LoginPage } from './components/auth/LoginPage';
 import { Header } from './components/common/Header';
 import { OfflineBanner } from './components/common/OfflineBanner';
@@ -56,6 +57,13 @@ export default function App() {
 
   const [selectedStudentForAttendance, setSelectedStudentForAttendance] = useState<string | undefined>(undefined);
 
+  // Automatically register/refresh mobile Web Push subscription when signed in
+  useEffect(() => {
+    if (cloudReady && currentUser && currentUser.role !== 'owner') {
+      void ensurePushSubscription(currentUser, false);
+    }
+  }, [cloudReady, currentUser?.id, currentUser?.role, currentUser?.phone]);
+
   const handleLoginSuccess = (user: User) => {
     storage.setCurrentUser(user);
     setCurrentUser(user);
@@ -65,14 +73,17 @@ export default function App() {
       localStorage.setItem('nps_admin_session', 'true');
     } else {
       localStorage.removeItem('nps_admin_session');
+      void ensurePushSubscription(user, false);
     }
   };
 
   const handleLogout = () => {
+    const loggedOutUserId = currentUser?.id;
     storage.setCurrentUser(null);
     setCurrentUser(null);
     setIsAdminSession(false);
     localStorage.removeItem('nps_admin_session');
+    void unregisterCurrentPushSubscription(loggedOutUserId);
   };
 
   const handleUserUpdated = (updated: User) => {

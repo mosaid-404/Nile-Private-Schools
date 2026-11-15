@@ -3,7 +3,7 @@
  * Version: nps-v1.0.0
  */
 
-const CACHE_NAME = 'nps-app-shell-v2';
+const CACHE_NAME = 'nps-app-shell-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -17,17 +17,17 @@ const STATIC_ASSETS = [
   '/icons/apple-touch-icon.png'
 ];
 
-// Install: Cache Shell & static files
+// Install: Cache Shell & static files safely
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
+      return Promise.allSettled(STATIC_ASSETS.map((asset) => cache.add(asset)));
     })
   );
   self.skipWaiting();
 });
 
-// Activate: clean old caches
+// Activate: clean old caches and claim clients immediately
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
@@ -42,12 +42,18 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Fetch: Stale-while-revalidate for static, Network-first for navigation, fallback to offline.html
+// Fetch: Bypass /api & Firebase, network-first for navigation, stale-while-revalidate for static assets
 self.addEventListener('fetch', (event) => {
   const { request } = event;
+  const url = new URL(request.url);
 
-  // Ignore non-GET requests (e.g. POST for data operations)
-  if (request.method !== 'GET') {
+  // Ignore non-GET requests and API/Firebase network calls
+  if (
+    request.method !== 'GET' ||
+    url.pathname.startsWith('/api/') ||
+    url.hostname.includes('googleapis.com') ||
+    url.hostname.includes('firebaseio.com')
+  ) {
     return;
   }
 
@@ -65,7 +71,6 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(request).then((cachedResponse) => {
       if (cachedResponse) {
-        // Fetch in background to update cache
         fetch(request).then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             caches.open(CACHE_NAME).then((cache) => cache.put(request, networkResponse));
@@ -79,7 +84,6 @@ self.addEventListener('fetch', (event) => {
           return networkResponse;
         }
 
-        // Cache new fonts or script assets
         const responseToCache = networkResponse.clone();
         if (
           request.url.includes('fonts.googleapis.com') ||
@@ -91,7 +95,6 @@ self.addEventListener('fetch', (event) => {
 
         return networkResponse;
       }).catch(() => {
-        // Return fallback if applicable
         if (request.headers.get('accept')?.includes('text/html')) {
           return caches.match('/offline.html');
         }
@@ -100,32 +103,34 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Push Notification Reception (Section 9 & SW-06)
+// Background Push Notification Reception (runs on mobile even when browser/app is closed)
 self.addEventListener('push', (event) => {
   let data = {};
   if (event.data) {
     try {
       data = event.data.json();
     } catch {
-      data = { title: 'تنبيه غياب', body: event.data.text() };
+      data = { title: 'مدارس النيل الخاصة', body: event.data.text() };
     }
   }
 
-  const title = data.title || 'تنبيه غياب — مدارس النيل الخاصة';
+  const title = data.title || 'تنبيه جديد — مدارس النيل الخاصة';
   const options = {
-    body: data.body || 'تغيب الطالب عن الحصة الدراسية المقررة.',
+    body: data.body || 'لديك إشعار جديد من النظام المدرسي.',
     icon: '/icons/icon-192.png',
     badge: '/icons/icon-192.png',
     dir: 'rtl',
     lang: 'ar',
-    vibrate: [200, 100, 200],
+    tag: data.tag || `nps_push_${Date.now()}`,
+    renotify: true,
+    vibrate: [250, 100, 250],
     data: {
-      url: data.url || '/#attendance-log',
+      url: data.url || '/',
       studentId: data.studentId,
       date: new Date().toISOString()
     },
     actions: [
-      { action: 'view', title: 'عرض سجل الغياب' },
+      { action: 'view', title: 'عرض التفاصيل' },
       { action: 'close', title: 'إغلاق' }
     ]
   };
@@ -145,14 +150,14 @@ self.addEventListener('notificationclick', (event) => {
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // Focus existing window if open
       for (const client of clientList) {
         if ('focus' in client) {
-          client.navigate(targetUrl);
+          if ('navigate' in client) {
+            client.navigate(targetUrl).catch(() => {});
+          }
           return client.focus();
         }
       }
-      // Or open a new window
       if (clients.openWindow) {
         return clients.openWindow(targetUrl);
       }

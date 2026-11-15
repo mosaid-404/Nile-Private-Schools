@@ -3,6 +3,7 @@ import { Bell, CheckCheck, UserX, UserCheck, LogOut, CreditCard, Calendar, Clock
 import { AppNotification, User } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime } from '../../utils/arabic';
+import { MobilePushBanner } from './MobilePushBanner';
 
 interface Props {
   isOpen: boolean;
@@ -21,9 +22,6 @@ export const NotificationCenterModal: React.FC<Props> = ({
     return storage.getNotifications();
   });
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
-  const [permissionStatus, setPermissionStatus] = useState<NotificationPermission>(() => {
-    return typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default';
-  });
 
   if (!isOpen) return null;
 
@@ -72,16 +70,6 @@ export const NotificationCenterModal: React.FC<Props> = ({
     }
   };
 
-  const handleRequestPushPermission = async () => {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      const res = await Notification.requestPermission();
-      setPermissionStatus(res);
-      if (res === 'granted') {
-        storage.logAudit(currentUser.id, currentUser.displayName, 'تفعيل الإشعارات الفورية', 'User', currentUser.id, 'تم منح إذن إشعارات Web Push');
-      }
-    }
-  };
-
   const getIcon = (type: string) => {
     switch (type) {
       case 'presence':
@@ -122,21 +110,10 @@ export const NotificationCenterModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Web Push Prompt if not granted (NOT-03) */}
-        {permissionStatus !== 'granted' && (
-          <div className="bg-amber-50 border-b border-amber-100 p-3 px-5 flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2 text-amber-900">
-              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>فعّل إشعارات الهاتف لتصلك تنبيهات الغياب والرسوم فوراً دون فتح التطبيق.</span>
-            </div>
-            <button
-              onClick={handleRequestPushPermission}
-              className="px-3 py-1 bg-amber-600 text-white rounded font-bold hover:bg-amber-700 shrink-0 mr-2"
-            >
-              تفعيل الآن
-            </button>
-          </div>
-        )}
+        {/* Web Push Activation & Status (NOT-03) */}
+        <div className="p-3 px-4 border-b border-slate-100 bg-slate-50/50">
+          <MobilePushBanner currentUser={currentUser} variant="settings" />
+        </div>
 
         {/* Filter & Actions Bar */}
         <div className="p-3 px-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between text-xs">

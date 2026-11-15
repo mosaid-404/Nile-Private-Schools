@@ -5,6 +5,7 @@ import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime, getTodayDateString } from '../../utils/arabic';
 import { ChangePasswordModal } from '../common/ChangePasswordModal';
 import { ParentSettingsContent } from './ParentSettingsModal';
+import { MobilePushBanner } from '../common/MobilePushBanner';
 
 interface Props {
   currentUser: UserType;
@@ -125,6 +126,9 @@ export const ParentDashboard: React.FC<Props> = ({
           حساب ولي الأمر
         </span>
       </div>
+
+      {/* Prompt to activate background mobile notifications if not yet active */}
+      <MobilePushBanner currentUser={currentUser} variant="banner" />
 
       {/* Top Child Selector in grid boxes if multiple children exist */}
       {children.length > 1 && (

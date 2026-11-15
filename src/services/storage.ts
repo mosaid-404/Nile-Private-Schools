@@ -1,5 +1,6 @@
 import { collection, doc, getDocs, getDocsFromServer, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { dispatchRemoteWebPush } from './pushService';
 
 enum OperationType {
   CREATE = 'create',
@@ -401,7 +402,7 @@ class StorageService {
             });
             if (newForUser.length > 0) {
               const latest = newForUser[0];
-              this.triggerDeviceNotification(latest.title, latest.body, latest.url);
+              this.triggerDeviceNotification(latest.title, latest.body, latest.url, latest.studentId, `nps_${latest.id}`);
               this.playNotificationSound();
             }
           }
@@ -1352,7 +1353,7 @@ class StorageService {
     }
   }
 
-  public triggerDeviceNotification(title: string, body: string, url?: string, studentId?: string): void {
+  public triggerDeviceNotification(title: string, body: string, url?: string, studentId?: string, tag?: string): void {
     if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
       try {
         if ('serviceWorker' in navigator) {
@@ -1364,7 +1365,7 @@ class StorageService {
                 badge: '/icons/icon-192.png',
                 dir: 'rtl',
                 lang: 'ar',
-                tag: `nps_${Date.now()}`,
+                tag: tag || `nps_${Date.now()}`,
                 renotify: true,
                 vibrate: [200, 100, 200],
                 data: { url: url || '/', studentId }
@@ -1375,7 +1376,8 @@ class StorageService {
                 body,
                 icon: '/icons/icon-192.png',
                 dir: 'rtl',
-                lang: 'ar'
+                lang: 'ar',
+                tag: tag || `nps_${Date.now()}`
               });
             });
         } else {
@@ -1383,7 +1385,8 @@ class StorageService {
             body,
             icon: '/icons/icon-192.png',
             dir: 'rtl',
-            lang: 'ar'
+            lang: 'ar',
+            tag: tag || `nps_${Date.now()}`
           });
         }
       } catch (err) {
@@ -1405,6 +1408,21 @@ class StorageService {
     notifications.unshift(newNotif);
     this.set(STORAGE_KEYS.NOTIFICATIONS, notifications);
 
+    // Dispatch true background Web Push so mobile devices receive notifications even outside the browser
+    if (newNotif.recipientRole !== 'owner') {
+      dispatchRemoteWebPush({
+        notifId: newNotif.id,
+        recipientUserId: newNotif.recipientUserId,
+        recipientPhone: newNotif.recipientPhone,
+        recipientRole: newNotif.recipientRole,
+        notificationType: newNotif.type,
+        title: newNotif.title,
+        body: newNotif.body,
+        url: newNotif.url,
+        studentId: newNotif.studentId
+      });
+    }
+
     const currentUser = this.getCurrentUser();
     if (
       currentUser &&
@@ -1414,7 +1432,7 @@ class StorageService {
           (currentUser.phone === newNotif.recipientPhone ||
             (!newNotif.recipientPhone && currentUser.role === newNotif.recipientRole))))
     ) {
-      this.triggerDeviceNotification(newNotif.title, newNotif.body, newNotif.url, newNotif.studentId);
+      this.triggerDeviceNotification(newNotif.title, newNotif.body, newNotif.url, newNotif.studentId, `nps_${newNotif.id}`);
       this.playNotificationSound();
     }
 
