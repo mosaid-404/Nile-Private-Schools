@@ -1,3 +1,5 @@
+import { doc, getDoc, getDocFromServer, setDoc } from 'firebase/firestore';
+import { db } from '../firebase';
 import type { User } from '../types';
 
 export type PushRegistrationStatus =
@@ -24,6 +26,23 @@ interface VapidKeyFetchResult {
   message?: string;
 }
 
+interface StoredPushSubscriptionRecord {
+  id: string;
+  endpoint: string;
+  subscription: PushSubscriptionJSON;
+  userId: string;
+  role: User['role'];
+  phone?: string;
+  relatedId?: string;
+  deviceLabel?: string;
+  updatedAt: string;
+}
+
+const VAPID_PUBLIC_DOC_KEY = 'nps_vapid_public_key';
+const VAPID_KEYS_DOC_KEY = 'nps_vapid_keys';
+const SUBS_DOC_KEY = 'nps_push_subscriptions';
+const PUSH_OUTBOX_DOC_KEY = 'nps_push_outbox';
+
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const cleaned = base64String.trim();
   const padding = '='.repeat((4 - (cleaned.length % 4)) % 4);
@@ -42,6 +61,74 @@ function uint8ArraysEqual(a: Uint8Array, b: Uint8Array): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+function validateAndDecodeVapidPublicKey(publicKey?: string | null): Uint8Array | null {
+  if (!publicKey || !publicKey.trim()) return null;
+  try {
+    const keyBytes = urlBase64ToUint8Array(publicKey);
+    if (keyBytes.length !== 65 || keyBytes[0] !== 0x04) {
+      return null;
+    }
+    return keyBytes;
+  } catch {
+    return null;
+  }
+}
+
+async function readFirestoreStoreJson<T>(key: string, fallback: T): Promise<T> {
+  try {
+    const ref = doc(db, 'nps_store', key);
+    let snap;
+    try {
+      snap = await getDocFromServer(ref);
+    } catch {
+      snap = await getDoc(ref);
+    }
+    if (snap.exists()) {
+      const val = snap.data()?.value;
+      if (typeof val === 'string') {
+        return JSON.parse(val) as T;
+      }
+    }
+  } catch (err) {
+    console.warn(`[WebPush] Firestore read failed for ${key}:`, err);
+  }
+  return fallback;
+}
+
+async function writeFirestoreStoreJson<T>(key: string, data: T): Promise<boolean> {
+  try {
+    await setDoc(doc(db, 'nps_store', key), {
+      value: JSON.stringify(data),
+      updatedAt: new Date().toISOString()
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[WebPush] Firestore write failed for ${key}:`, err);
+    return false;
+  }
+}
+
+async function fetchVapidPublicKeyFromFirestore(): Promise<VapidKeyFetchResult | null> {
+  const pubDoc = await readFirestoreStoreJson<{ publicKey?: string } | null>(VAPID_PUBLIC_DOC_KEY, null);
+  let candidate = pubDoc?.publicKey?.trim();
+
+  if (!candidate) {
+    const keysDoc = await readFirestoreStoreJson<{ publicKey?: string } | null>(VAPID_KEYS_DOC_KEY, null);
+    candidate = keysDoc?.publicKey?.trim();
+  }
+
+  if (!candidate) return null;
+  const keyBytes = validateAndDecodeVapidPublicKey(candidate);
+  if (!keyBytes) {
+    return {
+      ok: false,
+      code: 'FIRESTORE_VAPID_KEY_INVALID',
+      message: 'مفتاح VAPID العام المحفوظ في قاعدة البيانات غير صالح.'
+    };
+  }
+  return { ok: true, publicKey: candidate, keyBytes };
 }
 
 export function getPushSupportInfo(): PushSupportInfo {
@@ -110,7 +197,8 @@ export async function getCurrentPushEndpoint(): Promise<string | null> {
 
 export async function fetchVapidPublicKey(): Promise<VapidKeyFetchResult> {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 10000);
+  const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+  let apiError: VapidKeyFetchResult | null = null;
 
   try {
     const res = await fetch('/api/push/vapid-public-key', {
@@ -122,94 +210,94 @@ export async function fetchVapidPublicKey(): Promise<VapidKeyFetchResult> {
 
     const contentType = (res.headers.get('content-type') || '').toLowerCase();
     if (!contentType.includes('application/json')) {
-      console.error(
-        `[WebPush] Invalid content-type from /api/push/vapid-public-key: status=${res.status}, contentType=${contentType}`
+      console.warn(
+        `[WebPush] /api/push/vapid-public-key returned non-JSON (${res.status}, ${contentType}); trying Firestore fallback.`
       );
-      return {
+      apiError = {
         ok: false,
-        code: 'API_RETURNED_NON_JSON',
+        code: res.status === 404 ? 'API_ROUTE_NOT_FOUND' : 'API_RETURNED_NON_JSON',
         message:
           res.status === 404
-            ? 'مسار الـ API الخاص بمفتاح الإشعارات (/api/push/vapid-public-key) غير موجود (404).'
-            : 'الخادم أعاد صفحة HTML بدلاً من JSON عند طلب مفتاح الإشعارات — تأكد من تشغيل خادم Node/Express (server.ts).'
+            ? 'مسار الـ API (/api/push/vapid-public-key) غير موجود على الخادم (404).'
+            : 'الخادم أعاد صفحة HTML بدلاً من JSON عند طلب مفتاح الإشعارات.'
       };
-    }
+    } else {
+      const data = (await res.json()) as {
+        ok?: boolean;
+        publicKey?: string;
+        code?: string;
+        error?: string;
+      };
 
-    const data = (await res.json()) as {
-      ok?: boolean;
-      publicKey?: string;
-      code?: string;
-      error?: string;
-      details?: string;
-    };
-
-    if (!res.ok) {
-      console.error('[WebPush] Backend returned error for VAPID key:', res.status, data);
-      if (res.status === 404 || data.code === 'API_ROUTE_NOT_FOUND') {
-        return {
+      if (!res.ok) {
+        if (data.code === 'VAPID_ENV_PARTIAL' || data.code === 'VAPID_ENV_INVALID') {
+          return {
+            ok: false,
+            code: data.code,
+            message:
+              data.error ||
+              'مفاتيح VAPID غير مهيأة بشكل صحيح في متغيرات البيئة (Environment Variables).'
+          };
+        }
+        apiError = {
           ok: false,
-          code: data.code || 'API_ROUTE_NOT_FOUND',
-          message: 'مسار الـ API (/api/push/vapid-public-key) غير موجود على الخادم (404).'
+          code: data.code || `HTTP_${res.status}`,
+          message: data.error
+            ? `خطأ الخادم (${res.status}): ${data.error}`
+            : `تعذر الحصول على مفتاح الإشعارات من الخادم (كود ${res.status}).`
         };
-      }
-      if (data.code === 'VAPID_ENV_PARTIAL' || data.code === 'VAPID_ENV_INVALID') {
-        return {
-          ok: false,
-          code: data.code,
-          message: data.error || 'مفاتيح VAPID غير مهيأة بشكل صحيح في متغيرات البيئة (Environment Variables).'
-        };
-      }
-      return {
-        ok: false,
-        code: data.code || `HTTP_${res.status}`,
-        message: data.error
-          ? `خطأ الخادم (${res.status}): ${data.error}`
-          : `تعذر الحصول على مفتاح الإشعارات من الخادم (كود ${res.status}).`
-      };
-    }
-
-    const publicKey = data.publicKey?.trim();
-    if (!publicKey) {
-      console.error('[WebPush] Empty publicKey received from server:', data);
-      return {
-        ok: false,
-        code: 'EMPTY_VAPID_KEY',
-        message: 'الخادم لم يُرجع مفتاح VAPID العام (قيمة فارغة).'
-      };
-    }
-
-    try {
-      const keyBytes = urlBase64ToUint8Array(publicKey);
-      if (keyBytes.length !== 65 || keyBytes[0] !== 0x04) {
-        console.error('[WebPush] Invalid VAPID public key byte length:', keyBytes.length);
-        return {
+      } else {
+        const publicKey = data.publicKey?.trim();
+        const keyBytes = validateAndDecodeVapidPublicKey(publicKey);
+        if (publicKey && keyBytes) {
+          return { ok: true, publicKey, keyBytes };
+        }
+        apiError = {
           ok: false,
           code: 'INVALID_VAPID_KEY_FORMAT',
-          message: 'مفتاح VAPID العام المستلم من الخادم بصيغة غير صالحة.'
+          message: 'صيغة مفتاح VAPID العام المستلم من الخادم غير صالحة.'
         };
       }
-      return { ok: true, publicKey, keyBytes };
-    } catch (decodeErr) {
-      console.error('[WebPush] Failed decoding VAPID public key:', decodeErr);
-      return {
-        ok: false,
-        code: 'INVALID_VAPID_KEY_FORMAT',
-        message: 'تعذر فك تشفير مفتاح VAPID العام المستلم من الخادم.'
-      };
     }
   } catch (err) {
     const isAbort = err instanceof DOMException && err.name === 'AbortError';
-    console.error('[WebPush] Network error fetching VAPID public key:', err);
-    return {
+    console.warn('[WebPush] Error calling /api/push/vapid-public-key, trying Firestore fallback:', err);
+    apiError = {
       ok: false,
       code: isAbort ? 'VAPID_FETCH_TIMEOUT' : 'VAPID_NETWORK_ERROR',
       message: isAbort
         ? 'انتهت مهلة الاتصال بالخادم أثناء جلب مفتاح الإشعارات.'
-        : 'تعذر الاتصال بالخادم لجلب مفتاح الإشعارات. تأكد من اتصالك بالإنترنت ومن تشغيل الخادم.'
+        : 'تعذر الاتصال بخادم الإشعارات.'
     };
   } finally {
     window.clearTimeout(timeoutId);
   }
+
+  // Fallback: Read VAPID public key from Firestore when /api/* is unavailable (e.g. static Shared App URL)
+  const fsResult = await fetchVapidPublicKeyFromFirestore();
+  if (fsResult?.ok && fsResult.keyBytes) {
+    return fsResult;
+  }
+
+  if (fsResult && !fsResult.ok) {
+    return fsResult;
+  }
+
+  return (
+    apiError || {
+      ok: false,
+      code: 'VAPID_KEY_UNAVAILABLE',
+      message:
+        'تعذر الحصول على مفتاح الإشعارات من الخادم أو قاعدة البيانات. تأكد من تشغيل الخادم الخلفي (server.ts).'
+    }
+  );
+}
+
+async function saveSubscriptionToFirestore(entry: StoredPushSubscriptionRecord): Promise<boolean> {
+  const list = await readFirestoreStoreJson<StoredPushSubscriptionRecord[]>(SUBS_DOC_KEY, []);
+  const filtered = Array.isArray(list) ? list.filter((s) => s.endpoint !== entry.endpoint) : [];
+  filtered.push(entry);
+  return writeFirestoreStoreJson(SUBS_DOC_KEY, filtered);
 }
 
 export async function ensurePushSubscription(
@@ -260,7 +348,7 @@ export async function ensurePushSubscription(
       };
     }
 
-    // 1. Fetch & validate VAPID public key securely BEFORE calling pushManager.subscribe
+    // 1. Fetch & validate VAPID public key (API primary + Firestore fallback) BEFORE subscribing
     const keyResult = await fetchVapidPublicKey();
     if (!keyResult.ok || !keyResult.keyBytes) {
       return {
@@ -273,7 +361,6 @@ export async function ensurePushSubscription(
     const expectedKeyBytes = keyResult.keyBytes;
     let subscription = await reg.pushManager.getSubscription();
 
-    // Re-subscribe if existing subscription uses an outdated/different VAPID key
     if (subscription?.options?.applicationServerKey) {
       const existingBytes = new Uint8Array(subscription.options.applicationServerKey);
       if (!uint8ArraysEqual(existingBytes, expectedKeyBytes)) {
@@ -292,7 +379,6 @@ export async function ensurePushSubscription(
       } catch (subErr: unknown) {
         const errName = subErr instanceof Error ? subErr.name : '';
         if (errName === 'InvalidStateError') {
-          // Clear stale subscription and retry once
           const stale = await reg.pushManager.getSubscription().catch(() => null);
           if (stale) await stale.unsubscribe().catch(() => {});
           subscription = await reg.pushManager.subscribe({
@@ -323,26 +409,49 @@ export async function ensurePushSubscription(
       ? 'iOS'
       : 'Desktop';
 
-    const saveRes = await fetch('/api/push/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        subscription: subJson,
-        userId: user.id,
-        role: user.role,
-        phone: user.phone,
-        relatedId: user.relatedId,
-        deviceLabel
-      })
-    });
+    const record: StoredPushSubscriptionRecord = {
+      id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      endpoint: subscription.endpoint,
+      subscription: subJson,
+      userId: user.id,
+      role: user.role,
+      phone: user.phone,
+      relatedId: user.relatedId,
+      deviceLabel,
+      updatedAt: new Date().toISOString()
+    };
 
-    if (!saveRes.ok) {
-      const errBody = (await saveRes.json().catch(() => ({}))) as { error?: string };
-      console.error('[WebPush] Failed saving subscription:', saveRes.status, errBody);
+    let saved = false;
+    try {
+      const saveRes = await fetch('/api/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscription: subJson,
+          userId: user.id,
+          role: user.role,
+          phone: user.phone,
+          relatedId: user.relatedId,
+          deviceLabel
+        })
+      });
+      const ct = (saveRes.headers.get('content-type') || '').toLowerCase();
+      if (saveRes.ok && ct.includes('application/json')) {
+        saved = true;
+      }
+    } catch {
+      // Fallback below
+    }
+
+    if (!saved) {
+      saved = await saveSubscriptionToFirestore(record);
+    }
+
+    if (!saved) {
       return {
         status: 'error',
-        code: `SUBSCRIBE_HTTP_${saveRes.status}`,
-        message: errBody.error || 'تعذر حفظ اشتراك إشعارات الهاتف على الخادم.'
+        code: 'SUBSCRIBE_PERSIST_FAILED',
+        message: 'تعذر حفظ اشتراك إشعارات الهاتف على الخادم أو قاعدة البيانات.'
       };
     }
 
@@ -364,15 +473,46 @@ export async function ensurePushSubscription(
 export async function unregisterCurrentPushSubscription(userId?: string): Promise<void> {
   try {
     const endpoint = await getCurrentPushEndpoint();
-    await fetch('/api/push/unsubscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint: endpoint || undefined, userId })
-    });
+    let removedViaApi = false;
+    try {
+      const res = await fetch('/api/push/unsubscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: endpoint || undefined, userId })
+      });
+      if (res.ok) removedViaApi = true;
+    } catch {
+      // Fallback below
+    }
+
+    if (!removedViaApi && (endpoint || userId)) {
+      const list = await readFirestoreStoreJson<StoredPushSubscriptionRecord[]>(SUBS_DOC_KEY, []);
+      if (Array.isArray(list)) {
+        const next = list.filter((s) => {
+          if (endpoint && s.endpoint === endpoint) return false;
+          if (!endpoint && userId && s.userId === userId) return false;
+          return true;
+        });
+        await writeFirestoreStoreJson(SUBS_DOC_KEY, next);
+      }
+    }
     window.dispatchEvent(new Event('nps_push_status_changed'));
   } catch {
     // Non-fatal
   }
+}
+
+async function enqueueOutboxPushJob(type: 'send' | 'test', payload: Record<string, unknown>): Promise<boolean> {
+  const jobs = await readFirestoreStoreJson<Array<Record<string, unknown>>>(PUSH_OUTBOX_DOC_KEY, []);
+  const next = Array.isArray(jobs) ? jobs.slice(-19) : [];
+  next.push({
+    id: `job_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    type,
+    payload,
+    createdAt: new Date().toISOString(),
+    processed: false
+  });
+  return writeFirestoreStoreJson(PUSH_OUTBOX_DOC_KEY, next);
 }
 
 export function dispatchRemoteWebPush(payload: {
@@ -387,16 +527,23 @@ export function dispatchRemoteWebPush(payload: {
   studentId?: string;
 }): void {
   if (typeof window === 'undefined' || payload.recipientRole === 'owner') return;
-  try {
-    void fetch('/api/push/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      keepalive: true,
-      body: JSON.stringify(payload)
-    }).catch(() => {});
-  } catch {
-    // Non-fatal fallback
-  }
+  void (async () => {
+    try {
+      const res = await fetch('/api/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        keepalive: true,
+        body: JSON.stringify(payload)
+      });
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (res.ok && ct.includes('application/json')) {
+        return;
+      }
+    } catch {
+      // Fall through to Firestore outbox
+    }
+    await enqueueOutboxPushJob('send', payload);
+  })();
 }
 
 export async function sendTestWebPush(user: User): Promise<{ ok: boolean; message: string }> {
@@ -418,15 +565,33 @@ export async function sendTestWebPush(user: User): Promise<{ ok: boolean; messag
         phone: user.phone
       })
     });
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    if (!res.ok || !data.ok) {
-      return { ok: false, message: data.error || 'تعذر إرسال الإشعار التجريبي.' };
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('application/json')) {
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (res.ok && data.ok) {
+        return {
+          ok: true,
+          message: 'تم إرسال إشعار تجريبي إلى جهازك بنجاح!'
+        };
+      }
+      if (res.status !== 404) {
+        return { ok: false, message: data.error || 'تعذر إرسال الإشعار التجريبي.' };
+      }
     }
+  } catch {
+    // Fallback to Firestore outbox below
+  }
+
+  const queued = await enqueueOutboxPushJob('test', {
+    endpoint: regResult.endpoint,
+    userId: user.id,
+    phone: user.phone
+  });
+  if (queued) {
     return {
       ok: true,
-      message: 'تم إرسال إشعار تجريبي إلى جهازك بنجاح!'
+      message: 'تم تفعيل الإشعارات وإرسال طلب الإشعار التجريبي بنجاح!'
     };
-  } catch {
-    return { ok: false, message: 'تعذر الاتصال بالخادم لإرسال الإشعار التجريبي.' };
   }
+  return { ok: false, message: 'تعذر الاتصال بالخادم لإرسال الإشعار التجريبي.' };
 }

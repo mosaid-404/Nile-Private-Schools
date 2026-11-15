@@ -14,7 +14,8 @@ import {
   getFirestore,
   doc,
   getDoc,
-  setDoc
+  setDoc,
+  onSnapshot
 } from 'firebase/firestore';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -55,7 +56,9 @@ interface ParentRecord {
 }
 
 const VAPID_DOC_KEY = 'nps_vapid_keys';
+const VAPID_PUBLIC_DOC_KEY = 'nps_vapid_public_key';
 const SUBS_DOC_KEY = 'nps_push_subscriptions';
+const PUSH_OUTBOX_DOC_KEY = 'nps_push_outbox';
 const PARENTS_DOC_KEY = 'nps_parents';
 
 function normalizePhone(phone?: string | null): string {
@@ -189,6 +192,7 @@ async function ensureVapidKeys(): Promise<VapidKeys> {
       }
       cachedVapidKeys = { publicKey: envPub, privateKey: envPriv };
       cachedVapidSource = 'env';
+      void writeStoreValue(VAPID_PUBLIC_DOC_KEY, { publicKey: envPub });
       return cachedVapidKeys;
     }
 
@@ -198,6 +202,7 @@ async function ensureVapidKeys(): Promise<VapidKeys> {
         webpush.setVapidDetails(subject, fromDb.publicKey, fromDb.privateKey);
         cachedVapidKeys = fromDb;
         cachedVapidSource = 'firestore';
+        void writeStoreValue(VAPID_PUBLIC_DOC_KEY, { publicKey: fromDb.publicKey });
         return cachedVapidKeys;
       } catch (err) {
         console.warn('Stored VAPID keys in Firestore failed validation, regenerating:', err);
@@ -212,6 +217,7 @@ async function ensureVapidKeys(): Promise<VapidKeys> {
     };
     cachedVapidSource = 'generated';
     void writeStoreValue(VAPID_DOC_KEY, cachedVapidKeys);
+    void writeStoreValue(VAPID_PUBLIC_DOC_KEY, { publicKey: cachedVapidKeys.publicKey });
     return cachedVapidKeys;
   })();
 
@@ -267,10 +273,227 @@ function shouldDeliverToParent(
   return true;
 }
 
+interface SendPushParams {
+  notifId?: string;
+  recipientUserId?: string;
+  recipientPhone?: string;
+  recipientRole?: StoredPushSubscription['role'];
+  notificationType?: string;
+  title: string;
+  body: string;
+  url?: string;
+  studentId?: string;
+}
+
+interface OutboxJob {
+  id: string;
+  type: 'send' | 'test';
+  payload: SendPushParams & { endpoint?: string; userId?: string; phone?: string };
+  createdAt: string;
+  processed?: boolean;
+}
+
+async function dispatchSendPush(params: SendPushParams): Promise<{ sent: number; failed: number; cleaned: number }> {
+  await ensureVapidKeys();
+  if (params.recipientRole === 'owner') {
+    return { sent: 0, failed: 0, cleaned: 0 };
+  }
+
+  const list = await loadSubscriptions(true);
+  const targetNormPhone = normalizePhone(params.recipientPhone);
+
+  let matches = list.filter((sub) => {
+    if (sub.role === 'owner') return false;
+    if (params.recipientUserId && sub.userId === params.recipientUserId) return true;
+    if (targetNormPhone && normalizePhone(sub.phone) === targetNormPhone) {
+      if (!params.recipientRole || sub.role === params.recipientRole) return true;
+    }
+    if (!params.recipientUserId && !targetNormPhone && params.recipientRole && sub.role === params.recipientRole) {
+      return true;
+    }
+    return false;
+  });
+
+  if (
+    matches.length > 0 &&
+    (params.notificationType === 'presence' ||
+      params.notificationType === 'absence' ||
+      params.notificationType === 'departure')
+  ) {
+    const parents = await readStoreValue<ParentRecord[]>(PARENTS_DOC_KEY, []);
+    if (Array.isArray(parents) && parents.length > 0) {
+      matches = matches.filter((sub) => {
+        if (sub.role !== 'parent') return true;
+        const subPhone = normalizePhone(sub.phone);
+        const parent = parents.find(
+          (p) =>
+            (sub.relatedId && p.id === sub.relatedId) ||
+            p.userId === sub.userId ||
+            (subPhone && normalizePhone(p.phone) === subPhone)
+        );
+        return shouldDeliverToParent(parent?.attendanceNotificationPref, params.notificationType);
+      });
+    }
+  }
+
+  if (matches.length === 0) {
+    return { sent: 0, failed: 0, cleaned: 0 };
+  }
+
+  const payload = JSON.stringify({
+    title: params.title,
+    body: params.body,
+    url: params.url || '/',
+    studentId: params.studentId,
+    type: params.notificationType,
+    tag: params.notifId ? `nps_${params.notifId}` : `nps_${Date.now()}`
+  });
+
+  const expiredEndpoints = new Set<string>();
+  let sent = 0;
+  let failed = 0;
+
+  await Promise.all(
+    matches.map(async (sub) => {
+      try {
+        await webpush.sendNotification(sub.subscription, payload, {
+          TTL: 86400,
+          urgency: 'high'
+        });
+        sent += 1;
+      } catch (err: unknown) {
+        failed += 1;
+        const statusCode =
+          typeof err === 'object' && err !== null && 'statusCode' in err
+            ? (err as { statusCode?: number }).statusCode
+            : undefined;
+        if (statusCode === 404 || statusCode === 410) {
+          expiredEndpoints.add(sub.endpoint);
+        } else {
+          console.warn('WebPush send failure:', statusCode, err);
+        }
+      }
+    })
+  );
+
+  if (expiredEndpoints.size > 0) {
+    const cleanedList = list.filter((s) => !expiredEndpoints.has(s.endpoint));
+    await saveSubscriptions(cleanedList);
+  }
+
+  return { sent, failed, cleaned: expiredEndpoints.size };
+}
+
+async function dispatchTestPush(params: { endpoint?: string; userId?: string; phone?: string }): Promise<{ found: number; sent: number }> {
+  await ensureVapidKeys();
+  const list = await loadSubscriptions(true);
+  const normPhone = normalizePhone(params.phone);
+  const targets = list.filter((sub) => {
+    if (params.endpoint && sub.endpoint === params.endpoint) return true;
+    if (params.userId && sub.userId === params.userId) return true;
+    if (normPhone && normalizePhone(sub.phone) === normPhone) return true;
+    return false;
+  });
+
+  if (targets.length === 0) {
+    return { found: 0, sent: 0 };
+  }
+
+  const payload = JSON.stringify({
+    title: 'مدارس النيل الخاصة — اختبار الإشعارات',
+    body: 'تم تفعيل إشعارات الهاتف بنجاح! ستصلك الإشعارات الفورية حتى خارج المتصفح.',
+    url: '/',
+    tag: `nps_test_${Date.now()}`
+  });
+
+  let sent = 0;
+  const expired = new Set<string>();
+  await Promise.all(
+    targets.map(async (sub) => {
+      try {
+        await webpush.sendNotification(sub.subscription, payload, {
+          TTL: 3600,
+          urgency: 'high'
+        });
+        sent += 1;
+      } catch (err: unknown) {
+        const statusCode =
+          typeof err === 'object' && err !== null && 'statusCode' in err
+            ? (err as { statusCode?: number }).statusCode
+            : undefined;
+        if (statusCode === 404 || statusCode === 410) {
+          expired.add(sub.endpoint);
+        }
+      }
+    })
+  );
+
+  if (expired.size > 0) {
+    await saveSubscriptions(list.filter((s) => !expired.has(s.endpoint)));
+  }
+
+  return { found: targets.length, sent };
+}
+
+function startPushOutboxWatcher(): void {
+  const handledJobIds = new Set<string>();
+  try {
+    onSnapshot(
+      doc(db, 'nps_store', PUSH_OUTBOX_DOC_KEY),
+      (snap) => {
+        if (!snap.exists()) return;
+        const raw = snap.data()?.value;
+        if (typeof raw !== 'string') return;
+        let jobs: OutboxJob[] = [];
+        try {
+          jobs = JSON.parse(raw) as OutboxJob[];
+        } catch {
+          return;
+        }
+        if (!Array.isArray(jobs) || jobs.length === 0) return;
+
+        const nowMs = Date.now();
+        const pending = jobs.filter(
+          (j) =>
+            j &&
+            !j.processed &&
+            !handledJobIds.has(j.id) &&
+            nowMs - new Date(j.createdAt).getTime() < 5 * 60 * 1000
+        );
+        if (pending.length === 0) return;
+
+        pending.forEach((j) => handledJobIds.add(j.id));
+
+        void (async () => {
+          for (const job of pending) {
+            try {
+              if (job.type === 'test') {
+                await dispatchTestPush(job.payload);
+              } else {
+                await dispatchSendPush(job.payload);
+              }
+              job.processed = true;
+            } catch (err) {
+              console.warn('Outbox push job error:', err);
+            }
+          }
+          await writeStoreValue(PUSH_OUTBOX_DOC_KEY, jobs.slice(-20));
+        })();
+      },
+      (err) => {
+        console.warn('Push outbox listener error:', err);
+      }
+    );
+  } catch (err) {
+    console.warn('Failed attaching push outbox watcher:', err);
+  }
+}
+
 async function startServer() {
   // Warm up VAPID keys and push subscriptions in background so server binds port 3000 immediately
   void ensureVapidKeys().catch((err) => console.warn('VAPID warmup warning:', err));
   void loadSubscriptions(true).catch((err) => console.warn('Subscriptions warmup warning:', err));
+  startPushOutboxWatcher();
 
   const app = express();
   app.use(express.json({ limit: '1mb' }));
@@ -407,124 +630,17 @@ async function startServer() {
 
   app.post('/api/push/send', async (req, res) => {
     try {
-      await ensureVapidKeys();
-      const {
-        notifId,
-        recipientUserId,
-        recipientPhone,
-        recipientRole,
-        notificationType,
-        title,
-        body,
-        url,
-        studentId
-      } = req.body as {
-        notifId?: string;
-        recipientUserId?: string;
-        recipientPhone?: string;
-        recipientRole?: StoredPushSubscription['role'];
-        notificationType?: string;
-        title?: string;
-        body?: string;
-        url?: string;
-        studentId?: string;
-      };
-
-      if (!title || !body) {
+      const params = req.body as Partial<SendPushParams>;
+      if (!params.title || !params.body) {
         res.status(400).json({ error: 'Missing notification title or body' });
         return;
       }
-
-      if (recipientRole === 'owner') {
+      if (params.recipientRole === 'owner') {
         res.json({ ok: true, sent: 0, skipped: 'owner' });
         return;
       }
-
-      const list = await loadSubscriptions(true);
-      const targetNormPhone = normalizePhone(recipientPhone);
-
-      let matches = list.filter((sub) => {
-        if (sub.role === 'owner') return false;
-        if (recipientUserId && sub.userId === recipientUserId) return true;
-        if (targetNormPhone && normalizePhone(sub.phone) === targetNormPhone) {
-          if (!recipientRole || sub.role === recipientRole) return true;
-        }
-        if (!recipientUserId && !targetNormPhone && recipientRole && sub.role === recipientRole) {
-          return true;
-        }
-        return false;
-      });
-
-      // Enforce parent notification preferences (حضور فقط / انصراف فقط / الاثنين معاً)
-      if (
-        matches.length > 0 &&
-        (notificationType === 'presence' ||
-          notificationType === 'absence' ||
-          notificationType === 'departure')
-      ) {
-        const parents = await readStoreValue<ParentRecord[]>(PARENTS_DOC_KEY, []);
-        if (Array.isArray(parents) && parents.length > 0) {
-          matches = matches.filter((sub) => {
-            if (sub.role !== 'parent') return true;
-            const subPhone = normalizePhone(sub.phone);
-            const parent = parents.find(
-              (p) =>
-                (sub.relatedId && p.id === sub.relatedId) ||
-                p.userId === sub.userId ||
-                (subPhone && normalizePhone(p.phone) === subPhone)
-            );
-            return shouldDeliverToParent(parent?.attendanceNotificationPref, notificationType);
-          });
-        }
-      }
-
-      if (matches.length === 0) {
-        res.json({ ok: true, sent: 0, failed: 0, cleaned: 0 });
-        return;
-      }
-
-      const payload = JSON.stringify({
-        title,
-        body,
-        url: url || '/',
-        studentId,
-        type: notificationType,
-        tag: notifId ? `nps_${notifId}` : `nps_${Date.now()}`
-      });
-
-      const expiredEndpoints = new Set<string>();
-      let sent = 0;
-      let failed = 0;
-
-      await Promise.all(
-        matches.map(async (sub) => {
-          try {
-            await webpush.sendNotification(sub.subscription, payload, {
-              TTL: 86400,
-              urgency: 'high'
-            });
-            sent += 1;
-          } catch (err: unknown) {
-            failed += 1;
-            const statusCode =
-              typeof err === 'object' && err !== null && 'statusCode' in err
-                ? (err as { statusCode?: number }).statusCode
-                : undefined;
-            if (statusCode === 404 || statusCode === 410) {
-              expiredEndpoints.add(sub.endpoint);
-            } else {
-              console.warn('WebPush send failure:', statusCode, err);
-            }
-          }
-        })
-      );
-
-      if (expiredEndpoints.size > 0) {
-        const cleanedList = list.filter((s) => !expiredEndpoints.has(s.endpoint));
-        await saveSubscriptions(cleanedList);
-      }
-
-      res.json({ ok: true, sent, failed, cleaned: expiredEndpoints.size });
+      const result = await dispatchSendPush(params as SendPushParams);
+      res.json({ ok: true, ...result });
     } catch (err) {
       console.error('Push send endpoint error:', err);
       res.status(500).json({ error: 'Failed to dispatch web push' });
@@ -533,64 +649,20 @@ async function startServer() {
 
   app.post('/api/push/test', async (req, res) => {
     try {
-      await ensureVapidKeys();
       const { endpoint, userId, phone } = req.body as {
         endpoint?: string;
         userId?: string;
         phone?: string;
       };
-
-      const list = await loadSubscriptions(true);
-      const normPhone = normalizePhone(phone);
-      const targets = list.filter((sub) => {
-        if (endpoint && sub.endpoint === endpoint) return true;
-        if (userId && sub.userId === userId) return true;
-        if (normPhone && normalizePhone(sub.phone) === normPhone) return true;
-        return false;
-      });
-
-      if (targets.length === 0) {
+      const result = await dispatchTestPush({ endpoint, userId, phone });
+      if (result.found === 0) {
         res.status(404).json({
           ok: false,
           error: 'لم يتم العثور على اشتراك إشعارات مسجل لهذا الجهاز بعد'
         });
         return;
       }
-
-      const payload = JSON.stringify({
-        title: 'مدارس النيل الخاصة — اختبار الإشعارات',
-        body: 'تم تفعيل إشعارات الهاتف بنجاح! ستصلك الإشعارات الفورية حتى خارج المتصفح.',
-        url: '/',
-        tag: `nps_test_${Date.now()}`
-      });
-
-      let sent = 0;
-      const expired = new Set<string>();
-      await Promise.all(
-        targets.map(async (sub) => {
-          try {
-            await webpush.sendNotification(sub.subscription, payload, {
-              TTL: 3600,
-              urgency: 'high'
-            });
-            sent += 1;
-          } catch (err: unknown) {
-            const statusCode =
-              typeof err === 'object' && err !== null && 'statusCode' in err
-                ? (err as { statusCode?: number }).statusCode
-                : undefined;
-            if (statusCode === 404 || statusCode === 410) {
-              expired.add(sub.endpoint);
-            }
-          }
-        })
-      );
-
-      if (expired.size > 0) {
-        await saveSubscriptions(list.filter((s) => !expired.has(s.endpoint)));
-      }
-
-      res.json({ ok: sent > 0, sent });
+      res.json({ ok: result.sent > 0, sent: result.sent });
     } catch (err) {
       console.error('Test push error:', err);
       res.status(500).json({ ok: false, error: 'Failed to send test push' });
