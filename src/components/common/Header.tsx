@@ -37,22 +37,22 @@ export const Header: React.FC<Props> = ({
 
   const notifications = storage.getNotifications();
   const seenUnreadKeys = new Set<string>();
-  const unreadCount = notifications.filter(n => {
-    if (n.isRead) return false;
-    const matchesRole =
-      currentUser.role === 'owner'
-        ? true
-        : n.recipientUserId
-        ? n.recipientUserId === currentUser.id
-        : currentUser.role === 'parent' || currentUser.role === 'teacher'
-        ? n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === currentUser.role)
-        : n.recipientRole === currentUser.role;
-    if (!matchesRole) return false;
-    const key = `${n.title}|${n.body}|${(n.createdAt || '').substring(0, 16)}`;
-    if (seenUnreadKeys.has(key)) return false;
-    seenUnreadKeys.add(key);
-    return true;
-  }).length;
+  const unreadCount =
+    currentUser.role === 'owner'
+      ? 0
+      : notifications.filter(n => {
+          if (n.isRead) return false;
+          const matchesRole = n.recipientUserId
+            ? n.recipientUserId === currentUser.id
+            : currentUser.role === 'parent' || currentUser.role === 'teacher'
+            ? n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === currentUser.role)
+            : n.recipientRole === currentUser.role;
+          if (!matchesRole) return false;
+          const key = `${n.title}|${n.body}|${(n.createdAt || '').substring(0, 16)}`;
+          if (seenUnreadKeys.has(key)) return false;
+          seenUnreadKeys.add(key);
+          return true;
+        }).length;
 
   const roleLabels: Record<string, { label: string; bg: string; text: string }> = {
     owner: { label: 'المالك / الإدارة', bg: 'bg-indigo-100', text: 'text-indigo-800' },
@@ -86,20 +86,22 @@ export const Header: React.FC<Props> = ({
             {/* Install Button in Header */}
             <PWAInstallButton variant="secondary" className="hidden md:flex" />
 
-            {/* Notifications Bell - Always visible in top bar */}
-            <button
-              onClick={() => setShowNotifications(true)}
-              className="relative p-2.5 rounded-xl bg-blue-50 text-[#1F4E8C] hover:bg-blue-100 border border-blue-200/70 transition-colors flex items-center gap-1.5"
-              title="الإشعارات"
-            >
-              <Bell className="w-5 h-5" />
-              <span className="hidden sm:inline text-xs font-bold">الإشعارات</span>
-              {unreadCount > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] flex items-center justify-center px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold shadow-xs">
-                  {unreadCount}
-                </span>
-              )}
-            </button>
+            {/* Notifications Bell - Only for Teachers & Parents (Admin does not receive notifications) */}
+            {currentUser.role !== 'owner' && (
+              <button
+                onClick={() => setShowNotifications(true)}
+                className="relative p-2.5 rounded-xl bg-blue-50 text-[#1F4E8C] hover:bg-blue-100 border border-blue-200/70 transition-colors flex items-center gap-1.5"
+                title="الإشعارات"
+              >
+                <Bell className="w-5 h-5" />
+                <span className="hidden sm:inline text-xs font-bold">الإشعارات</span>
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] flex items-center justify-center px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold shadow-xs">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+            )}
 
             {/* User Profile Pill */}
             <div className="flex items-center gap-2 pr-2 border-r border-slate-200">
@@ -206,12 +208,14 @@ export const Header: React.FC<Props> = ({
       </header>
 
       {/* Modals */}
-      <NotificationCenterModal
-        isOpen={showNotifications}
-        onClose={() => setShowNotifications(false)}
-        currentUser={currentUser}
-        onSelectStudentAttendance={onNavigateToStudentAttendance}
-      />
+      {currentUser.role !== 'owner' && (
+        <NotificationCenterModal
+          isOpen={showNotifications}
+          onClose={() => setShowNotifications(false)}
+          currentUser={currentUser}
+          onSelectStudentAttendance={onNavigateToStudentAttendance}
+        />
+      )}
 
       <ChangePasswordModal
         isOpen={showChangePass}

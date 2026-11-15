@@ -1292,6 +1292,7 @@ class StorageService {
     const currentUser = this.getCurrentUser();
     if (
       currentUser &&
+      currentUser.role !== 'owner' &&
       ((newNotif.recipientUserId && currentUser.id === newNotif.recipientUserId) ||
         (!newNotif.recipientUserId &&
           (currentUser.phone === newNotif.recipientPhone ||

@@ -27,9 +27,9 @@ export const NotificationCenterModal: React.FC<Props> = ({
 
   if (!isOpen) return null;
 
-  // Filter for current user's role/phone
+  // Filter for current user's role/phone (Admin does not receive notifications)
   const rawUserNotifications = notifications.filter(n => {
-    if (currentUser.role === 'owner') return true; // Owner sees all
+    if (currentUser.role === 'owner') return false;
     if (n.recipientUserId) return n.recipientUserId === currentUser.id;
     if (currentUser.role === 'parent') {
       return n.recipientPhone === currentUser.phone;
@@ -37,7 +37,7 @@ export const NotificationCenterModal: React.FC<Props> = ({
     if (currentUser.role === 'teacher') {
       return n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === 'teacher');
     }
-    return true;
+    return false;
   });
 
   const seenKeys = new Set<string>();
