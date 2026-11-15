@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Bell, CheckCheck, UserX, CreditCard, Calendar, Clock, AlertCircle, X } from 'lucide-react';
+import { Bell, CheckCheck, UserX, UserCheck, LogOut, CreditCard, Calendar, Clock, AlertCircle, X } from 'lucide-react';
 import { AppNotification, User } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime } from '../../utils/arabic';
@@ -28,8 +28,15 @@ export const NotificationCenterModal: React.FC<Props> = ({
   if (!isOpen) return null;
 
   // Filter for current user's role/phone (Admin does not receive notifications)
+  const parentPref =
+    currentUser.role === 'parent'
+      ? storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone)
+      : 'both';
   const rawUserNotifications = notifications.filter(n => {
     if (currentUser.role === 'owner') return false;
+    if (currentUser.role === 'parent' && !storage.shouldDeliverAttendanceNotif(parentPref, n.type)) {
+      return false;
+    }
     if (n.recipientUserId) return n.recipientUserId === currentUser.id;
     if (currentUser.role === 'parent') {
       return n.recipientPhone === currentUser.phone;
@@ -77,6 +84,10 @@ export const NotificationCenterModal: React.FC<Props> = ({
 
   const getIcon = (type: string) => {
     switch (type) {
+      case 'presence':
+        return <UserCheck className="w-5 h-5 text-emerald-600" />;
+      case 'departure':
+        return <LogOut className="w-5 h-5 text-indigo-600" />;
       case 'absence':
         return <UserX className="w-5 h-5 text-rose-600" />;
       case 'payment':

@@ -55,7 +55,8 @@ import {
   OfflineAttendanceQueueItem,
   UserRole,
   BroadcastNotification,
-  TutoringGroup
+  TutoringGroup,
+  AttendanceNotificationPreference
 } from '../types';
 import { getTodayDateString, cleanEgyptianPhone, formatArabicDate, formatArabicTime } from '../utils/arabic';
 
@@ -382,9 +383,16 @@ class StorageService {
           const currentUser = this.getCurrentUser();
           if (currentUser) {
             const latestNotifs = this.getNotifications();
+            const parentPref =
+              currentUser.role === 'parent'
+                ? this.getParentNotificationPref(currentUser.relatedId, currentUser.phone)
+                : 'both';
             const newForUser = latestNotifs.filter(n => {
               if (previousNotifIds.has(n.id) || n.isRead) return false;
               if (currentUser.role === 'owner') return false;
+              if (currentUser.role === 'parent' && !this.shouldDeliverAttendanceNotif(parentPref, n.type)) {
+                return false;
+              }
               if (n.recipientUserId) return n.recipientUserId === currentUser.id;
               return (
                 n.recipientPhone === currentUser.phone ||
@@ -734,6 +742,54 @@ class StorageService {
       parents[idx] = parent;
       this.set(STORAGE_KEYS.PARENTS, parents);
     }
+  }
+
+  public getParentNotificationPref(parentId?: string, phone?: string): AttendanceNotificationPreference {
+    const parents = this.getParents();
+    const match = parents.find(
+      p => (parentId && p.id === parentId) || (phone && p.phone === phone)
+    );
+    return match?.attendanceNotificationPref || 'both';
+  }
+
+  public setParentNotificationPref(user: User, pref: AttendanceNotificationPreference): void {
+    const parents = this.getParents();
+    const idx = parents.findIndex(
+      p =>
+        (user.relatedId && p.id === user.relatedId) ||
+        p.userId === user.id ||
+        (user.phone && p.phone === user.phone)
+    );
+    if (idx !== -1) {
+      parents[idx] = { ...parents[idx], attendanceNotificationPref: pref };
+      this.set(STORAGE_KEYS.PARENTS, parents);
+    } else if (user.phone) {
+      const newParent: Parent = {
+        id: user.relatedId || `prt_${Date.now()}`,
+        displayName: user.displayName,
+        phone: user.phone,
+        userId: user.id,
+        studentIds: [],
+        attendanceNotificationPref: pref,
+        createdAt: new Date().toISOString()
+      };
+      parents.push(newParent);
+      this.set(STORAGE_KEYS.PARENTS, parents);
+    }
+    window.dispatchEvent(new Event('nps_cloud_sync'));
+  }
+
+  public shouldDeliverAttendanceNotif(
+    pref: AttendanceNotificationPreference,
+    notifType: AppNotification['type']
+  ): boolean {
+    if (notifType === 'presence') {
+      return pref === 'both' || pref === 'presence_only';
+    }
+    if (notifType === 'absence' || notifType === 'departure') {
+      return pref === 'both' || pref === 'absence_only';
+    }
+    return true;
   }
 
   private handleParentPhoneChange(student: Student, newPhone: string, studentName: string): void {
@@ -1093,6 +1149,9 @@ class StorageService {
       );
       const subjectLabel = group?.subject || teacherObj?.subject || 'الحصة الدراسية';
       const teacherLabel = teacherObj ? `${teacherObj.name} (${teacherObj.subject})` : recordedBy;
+      const parentPref = student
+        ? this.getParentNotificationPref(student.parentId, student.parentPhone)
+        : 'both';
 
       if (existingIdx !== -1) {
         // Update existing record
@@ -1112,18 +1171,20 @@ class StorageService {
             history
           };
 
-          // If changed from present to absent, send absence alert
+          // If changed from present to absent, send absence alert if allowed by parent preference
           if (old.status === 'present' && item.status === 'absent' && student) {
-            this.sendPushNotification({
-              recipientPhone: student.parentPhone,
-              recipientRole: 'parent',
-              title: 'تنبيه غياب',
-              body: `تغيّب الطالب ${student.name} عن حصة ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
-              url: '/#parent-children',
-              type: 'absence',
-              studentId: student.id
-            });
-            notifiedCount++;
+            if (this.shouldDeliverAttendanceNotif(parentPref, 'absence')) {
+              this.sendPushNotification({
+                recipientPhone: student.parentPhone,
+                recipientRole: 'parent',
+                title: 'تنبيه غياب',
+                body: `تغيّب الطالب ${student.name} عن حصة ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
+                url: '/#parent-children',
+                type: 'absence',
+                studentId: student.id
+              });
+              notifiedCount++;
+            }
           } else if (old.status === 'absent' && item.status === 'present' && student) {
             // If corrected to present, send correction alert (ATT-12)
             this.sendPushNotification({
@@ -1135,6 +1196,7 @@ class StorageService {
               type: 'correction',
               studentId: student.id
             });
+            notifiedCount++;
           }
         }
       } else {
@@ -1149,18 +1211,32 @@ class StorageService {
           recordedBy
         });
 
-        // Send absence notification if absent
         if (item.status === 'absent' && student) {
-          this.sendPushNotification({
-            recipientPhone: student.parentPhone,
-            recipientRole: 'parent',
-            title: 'تنبيه غياب',
-            body: `تغيّب الطالب ${student.name} عن حصة ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
-            url: '/#parent-children',
-            type: 'absence',
-            studentId: student.id
-          });
-          notifiedCount++;
+          if (this.shouldDeliverAttendanceNotif(parentPref, 'absence')) {
+            this.sendPushNotification({
+              recipientPhone: student.parentPhone,
+              recipientRole: 'parent',
+              title: 'تنبيه غياب',
+              body: `تغيّب الطالب ${student.name} عن حصة ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
+              url: '/#parent-children',
+              type: 'absence',
+              studentId: student.id
+            });
+            notifiedCount++;
+          }
+        } else if (item.status === 'present' && student) {
+          if (this.shouldDeliverAttendanceNotif(parentPref, 'presence')) {
+            this.sendPushNotification({
+              recipientPhone: student.parentPhone,
+              recipientRole: 'parent',
+              title: 'إشعار حضور',
+              body: `تم تسجيل حضور الطالب ${student.name} في ${subjectLabel} مع المعلم ${teacherLabel} اليوم ${sessionDate} الساعة ${sessionTime}.`,
+              url: '/#parent-children',
+              type: 'presence',
+              studentId: student.id
+            });
+            notifiedCount++;
+          }
         }
       }
     }
@@ -1177,6 +1253,46 @@ class StorageService {
     );
 
     return { absentCount, notifiedCount };
+  }
+
+  public recordDeparture(
+    studentIds: string[],
+    recordedBy: string,
+    label?: string
+  ): { notifiedCount: number } {
+    const students = this.getStudents();
+    const todayStr = getTodayDateString();
+    const nowTime = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    let notifiedCount = 0;
+
+    for (const id of studentIds) {
+      const student = students.find(s => s.id === id && s.status === 'active');
+      if (!student) continue;
+      const pref = this.getParentNotificationPref(student.parentId, student.parentPhone);
+      if (this.shouldDeliverAttendanceNotif(pref, 'departure')) {
+        this.sendPushNotification({
+          recipientPhone: student.parentPhone,
+          recipientRole: 'parent',
+          title: 'إشعار انصراف',
+          body: `تم تسجيل انصراف الطالب ${student.name}${label ? ` (${label})` : ''} اليوم ${todayStr} الساعة ${nowTime} بمعرفة ${recordedBy}.`,
+          url: '/#parent-children',
+          type: 'departure',
+          studentId: student.id
+        });
+        notifiedCount++;
+      }
+    }
+
+    this.logAudit(
+      'user',
+      recordedBy,
+      'تسجيل انصراف',
+      'Departure',
+      todayStr,
+      `تم تسجيل انصراف ${studentIds.length} طالب وإرسال ${notifiedCount} إشعار`
+    );
+
+    return { notifiedCount };
   }
 
   // --- Offline Queue (SW-07, ATT-15) ---

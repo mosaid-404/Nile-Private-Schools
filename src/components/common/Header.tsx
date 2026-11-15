@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { LogOut, Bell, Key, RefreshCw, Search } from 'lucide-react';
+import { LogOut, Bell, Key, RefreshCw, Search, Settings } from 'lucide-react';
 import { User } from '../../types';
 import { storage } from '../../services/storage';
 import { NotificationCenterModal } from './NotificationCenterModal';
 import { ChangePasswordModal } from './ChangePasswordModal';
+import { ParentSettingsModal } from '../parent/ParentSettingsModal';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface Props {
@@ -23,6 +24,7 @@ export const Header: React.FC<Props> = ({
 }) => {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showChangePass, setShowChangePass] = useState(false);
+  const [showParentSettings, setShowParentSettings] = useState(false);
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
   const [switchSearch, setSwitchSearch] = useState('');
   const [schoolSettings, setSchoolSettings] = useState(() => storage.getSettings());
@@ -36,12 +38,19 @@ export const Header: React.FC<Props> = ({
   }, []);
 
   const notifications = storage.getNotifications();
+  const parentPref =
+    currentUser.role === 'parent'
+      ? storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone)
+      : 'both';
   const seenUnreadKeys = new Set<string>();
   const unreadCount =
     currentUser.role === 'owner'
       ? 0
       : notifications.filter(n => {
           if (n.isRead) return false;
+          if (currentUser.role === 'parent' && !storage.shouldDeliverAttendanceNotif(parentPref, n.type)) {
+            return false;
+          }
           const matchesRole = n.recipientUserId
             ? n.recipientUserId === currentUser.id
             : currentUser.role === 'parent' || currentUser.role === 'teacher'
@@ -185,23 +194,36 @@ export const Header: React.FC<Props> = ({
                 </div>
               )}
 
-              {/* Change Password button */}
-              <button
-                onClick={() => setShowChangePass(true)}
-                className="p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
-                title="تغيير كلمة المرور"
-              >
-                <Key className="w-4 h-4" />
-              </button>
+              {currentUser.role === 'parent' ? (
+                <button
+                  onClick={() => setShowParentSettings(true)}
+                  className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors flex items-center gap-1.5"
+                  title="الإعدادات"
+                >
+                  <Settings className="w-5 h-5" />
+                  <span className="hidden sm:inline text-xs font-bold">الإعدادات</span>
+                </button>
+              ) : (
+                <>
+                  {/* Change Password button */}
+                  <button
+                    onClick={() => setShowChangePass(true)}
+                    className="p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+                    title="تغيير كلمة المرور"
+                  >
+                    <Key className="w-4 h-4" />
+                  </button>
 
-              {/* Logout button */}
-              <button
-                onClick={onLogout}
-                className="p-2 rounded-xl text-rose-600 hover:bg-rose-50 transition-colors"
-                title="تسجيل الخروج"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
+                  {/* Logout button */}
+                  <button
+                    onClick={onLogout}
+                    className="p-2 rounded-xl text-rose-600 hover:bg-rose-50 transition-colors"
+                    title="تسجيل الخروج"
+                  >
+                    <LogOut className="w-4 h-4" />
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -214,6 +236,16 @@ export const Header: React.FC<Props> = ({
           onClose={() => setShowNotifications(false)}
           currentUser={currentUser}
           onSelectStudentAttendance={onNavigateToStudentAttendance}
+        />
+      )}
+
+      {currentUser.role === 'parent' && (
+        <ParentSettingsModal
+          isOpen={showParentSettings}
+          onClose={() => setShowParentSettings(false)}
+          currentUser={currentUser}
+          onOpenChangePassword={() => setShowChangePass(true)}
+          onLogout={onLogout}
         />
       )}
 

@@ -26,12 +26,15 @@ export interface Student {
   createdAt: string;
 }
 
+export type AttendanceNotificationPreference = 'both' | 'presence_only' | 'absence_only';
+
 export interface Parent {
   id: string;
   displayName: string;
   phone: string;
   userId: string;
   studentIds: string[];
+  attendanceNotificationPref?: AttendanceNotificationPreference;
   createdAt: string;
 }
 
@@ -145,7 +148,7 @@ export interface AppNotification {
   title: string;
   body: string;
   url: string;
-  type: 'absence' | 'correction' | 'payment' | 'schedule_change' | 'reminder' | 'broadcast' | 'tutoring';
+  type: 'presence' | 'absence' | 'departure' | 'correction' | 'payment' | 'schedule_change' | 'reminder' | 'broadcast' | 'tutoring';
   category?: 'general' | 'academic' | 'activity' | 'honor' | 'urgent';
   studentId?: string;
   targetLabel?: string;

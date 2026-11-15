@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Bell, User, CheckCircle2, XCircle, Calendar, Clock, Shield, Sparkles, MapPin, BookOpen } from 'lucide-react';
+import { Users, Bell, CheckCircle2, XCircle, Calendar, Clock, Sparkles, MapPin, BookOpen, Settings } from 'lucide-react';
 import { User as UserType, Student } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime, getTodayDateString } from '../../utils/arabic';
 import { ChangePasswordModal } from '../common/ChangePasswordModal';
-import { PWAInstallButton } from '../common/PWAInstallButton';
+import { ParentSettingsContent } from './ParentSettingsModal';
 
 interface Props {
   currentUser: UserType;
@@ -17,7 +17,7 @@ export const ParentDashboard: React.FC<Props> = ({
   onLogout,
   selectedStudentId
 }) => {
-  const [activeNav, setActiveNav] = useState<'children' | 'tutoring' | 'notifications' | 'account'>('children');
+  const [activeNav, setActiveNav] = useState<'children' | 'tutoring' | 'notifications' | 'settings'>('children');
   const [children, setChildren] = useState<Student[]>([]);
   const [selectedChildId, setSelectedChildId] = useState<string>('all');
   const [showWelcomeModal, setShowWelcomeModal] = useState(false);
@@ -59,11 +59,13 @@ export const ParentDashboard: React.FC<Props> = ({
   const groups = storage.getGroups();
   const teachers = storage.getTeachers();
   const tutoringGroups = storage.getTutoringGroups();
-  const notifications = storage.getNotifications().filter(n =>
-    n.recipientUserId
+  const parentPref = storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone);
+  const notifications = storage.getNotifications().filter(n => {
+    if (!storage.shouldDeliverAttendanceNotif(parentPref, n.type)) return false;
+    return n.recipientUserId
       ? n.recipientUserId === currentUser.id
-      : n.recipientPhone === currentUser.phone
-  );
+      : n.recipientPhone === currentUser.phone;
+  });
 
   // Calculate monthly stats for a child
   const getChildMonthlyStats = (studentId: string) => {
@@ -411,6 +413,10 @@ export const ParentDashboard: React.FC<Props> = ({
                   className={`p-4 rounded-2xl border text-xs text-right space-y-1 ${
                     n.type === 'absence'
                       ? 'bg-rose-50/60 border-rose-200'
+                      : n.type === 'presence'
+                      ? 'bg-emerald-50/60 border-emerald-200'
+                      : n.type === 'departure'
+                      ? 'bg-indigo-50/60 border-indigo-200'
                       : n.type === 'tutoring'
                       ? 'bg-amber-50/60 border-amber-200'
                       : 'bg-slate-50 border-slate-200'
@@ -419,6 +425,8 @@ export const ParentDashboard: React.FC<Props> = ({
                   <div className="flex items-center justify-between font-bold text-slate-900">
                     <span className="flex items-center gap-1.5">
                       {n.type === 'absence' && <span className="w-2 h-2 rounded-full bg-rose-600" />}
+                      {n.type === 'presence' && <span className="w-2 h-2 rounded-full bg-emerald-600" />}
+                      {n.type === 'departure' && <span className="w-2 h-2 rounded-full bg-indigo-600" />}
                       {n.type === 'tutoring' && <span className="w-2 h-2 rounded-full bg-amber-600" />}
                       {n.title}
                     </span>
@@ -434,46 +442,14 @@ export const ParentDashboard: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Main Tab 4: Account (حسابي - PRT-07) */}
-      {activeNav === 'account' && (
-        <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-5">
-          <div className="flex items-center gap-4 pb-4 border-b border-slate-200">
-            <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-800 flex items-center justify-center font-bold text-xl">
-              <User className="w-7 h-7" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-slate-900">{currentUser.displayName}</h2>
-              <p className="text-xs text-slate-500 font-mono mt-0.5">رقم الهاتف: {currentUser.phone}</p>
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            {/* Install PWA Banner */}
-            <PWAInstallButton variant="banner" />
-
-            {/* Change Password */}
-            <button
-              onClick={() => setShowChangePass(true)}
-              className="w-full p-4 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200 flex items-center justify-between text-xs font-bold text-slate-800 transition"
-            >
-              <div className="flex items-center gap-3">
-                <Shield className="w-5 h-5 text-[#1F4E8C]" />
-                <div className="text-right">
-                  <span className="block">تغيير كلمة المرور</span>
-                  <span className="text-[10px] text-slate-400 font-normal">حدّث كلمة مرور حسابك في أي وقت</span>
-                </div>
-              </div>
-              <span>تعديل ←</span>
-            </button>
-
-            {/* Logout */}
-            <button
-              onClick={onLogout}
-              className="w-full p-4 rounded-2xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-xs font-bold transition flex items-center justify-center gap-2"
-            >
-              <span>تسجيل الخروج من الحساب</span>
-            </button>
-          </div>
+      {/* Main Tab 4: Settings (الإعدادات - ترس الإعدادات) */}
+      {activeNav === 'settings' && (
+        <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
+          <ParentSettingsContent
+            currentUser={currentUser}
+            onOpenChangePassword={() => setShowChangePass(true)}
+            onLogout={onLogout}
+          />
         </div>
       )}
 
@@ -519,13 +495,13 @@ export const ParentDashboard: React.FC<Props> = ({
           </button>
 
           <button
-            onClick={() => setActiveNav('account')}
+            onClick={() => setActiveNav('settings')}
             className={`flex flex-col items-center gap-1 text-[11px] font-bold transition-colors ${
-              activeNav === 'account' ? 'text-[#1F4E8C]' : 'text-slate-400 hover:text-slate-600'
+              activeNav === 'settings' ? 'text-[#1F4E8C]' : 'text-slate-400 hover:text-slate-600'
             }`}
           >
-            <User className="w-5 h-5" />
-            <span>حسابي</span>
+            <Settings className="w-5 h-5" />
+            <span>الإعدادات</span>
           </button>
         </div>
       </nav>

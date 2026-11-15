@@ -25,6 +25,7 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
   const [selectedClassNumber, setSelectedClassNumber] = useState<number>(1);
   const [quickRecords, setQuickRecords] = useState<Record<string, 'present' | 'absent'>>({});
   const [quickSavedInfo, setQuickSavedInfo] = useState<{ present: number; absent: number; notified: number } | null>(null);
+  const [departureInfo, setDepartureInfo] = useState<{ count: number; notified: number } | null>(null);
 
   // Tutoring attendance state (per tutoring group id)
   const [activeTutAttendanceId, setActiveTutAttendanceId] = useState<string | null>(null);
@@ -191,12 +192,26 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
             status: (quickRecords[s.id] === 'absent' ? 'absent' : 'present') as 'present' | 'absent'
           }));
           const res = storage.recordAttendance(sessionId, finalItems, currentUser.displayName);
+          setDepartureInfo(null);
           setQuickSavedInfo({
             present: presentCount,
             absent: absentCount,
             notified: res.notifiedCount
           });
           loadData();
+        };
+
+        const handleRecordDeparture = () => {
+          const presentIds = classStudents
+            .filter(s => (quickRecords[s.id] || 'present') === 'present')
+            .map(s => s.id);
+          if (presentIds.length === 0) return;
+          const res = storage.recordDeparture(
+            presentIds,
+            currentUser.displayName,
+            `${selectedGrade} - فصل ${selectedClassNumber}`
+          );
+          setDepartureInfo({ count: presentIds.length, notified: res.notifiedCount });
         };
 
         return (
@@ -266,7 +281,21 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                     <strong className="text-emerald-900 block">تم تأكيد وحفظ حضور الفصل بنجاح!</strong>
                     <span className="text-emerald-700">
                       حاضر: {quickSavedInfo.present} • غائب: {quickSavedInfo.absent}
-                      {quickSavedInfo.notified > 0 && ` • تم إرسال ${quickSavedInfo.notified} إشعار غياب لأولياء الأمور`}
+                      {quickSavedInfo.notified > 0 && ` • تم إرسال ${quickSavedInfo.notified} إشعار لأولياء الأمور`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {departureInfo && (
+              <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <CheckCircle2 className="w-6 h-6 text-indigo-600 shrink-0" />
+                  <div className="text-xs sm:text-sm">
+                    <strong className="text-indigo-900 block">تم تسجيل انصراف الطلاب الحاضرين بنجاح!</strong>
+                    <span className="text-indigo-700">
+                      الطلاب المنصرفون: {departureInfo.count} • تم إرسال {departureInfo.notified} إشعار انصراف لأولياء الأمور
                     </span>
                   </div>
                 </div>
@@ -356,14 +385,27 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                   })}
                 </div>
 
-                <button
-                  type="button"
-                  onClick={handleConfirmQuickAttendance}
-                  className="w-full py-3.5 px-6 rounded-2xl bg-[#1F4E8C] hover:bg-[#163A6B] text-white font-bold text-sm shadow-lg shadow-blue-900/15 transition flex items-center justify-center gap-2"
-                >
-                  <CheckCircle2 className="w-5 h-5" />
-                  <span>تأكيد وحفظ الحضور ({classStudents.length} طالب)</span>
-                </button>
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleConfirmQuickAttendance}
+                    className="flex-1 py-3.5 px-6 rounded-2xl bg-[#1F4E8C] hover:bg-[#163A6B] text-white font-bold text-sm shadow-lg shadow-blue-900/15 transition flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle2 className="w-5 h-5" />
+                    <span>تأكيد وحفظ الحضور ({classStudents.length} طالب)</span>
+                  </button>
+
+                  {presentCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleRecordDeparture}
+                      className="sm:w-auto py-3.5 px-5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-sm transition flex items-center justify-center gap-2"
+                    >
+                      <Clock className="w-4 h-4" />
+                      <span>تسجيل انصراف ({presentCount})</span>
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
