@@ -4,7 +4,6 @@ import { User, SessionInstance, Group, ScheduleSlot, Student, TutoringGroup } fr
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime, getTodayDateString, ARABIC_DAYS } from '../../utils/arabic';
 import { SessionAttendanceModal } from './SessionAttendanceModal';
-import { MobilePushBanner } from '../common/MobilePushBanner';
 
 interface Props {
   currentUser: User;
@@ -167,9 +166,6 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
           </button>
         </div>
       </div>
-
-      {/* Prompt to activate background mobile notifications if not yet active */}
-      <MobilePushBanner currentUser={currentUser} variant="banner" />
 
       {/* Tab 0: Quick Class Attendance (Select Grade + Class -> Mark Present/Absent -> Confirm) */}
       {activeTab === 'quick_class' && (() => {

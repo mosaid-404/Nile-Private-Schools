@@ -1,12 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { BellRing, CheckCircle2, Smartphone, AlertCircle, Send } from 'lucide-react';
+import { BellRing, CheckCircle2, Smartphone, AlertCircle } from 'lucide-react';
 import type { User } from '../../types';
 import { storage } from '../../services/storage';
 import {
   ensurePushSubscription,
   getCurrentPushEndpoint,
-  getPushSupportInfo,
-  sendTestWebPush
+  getPushSupportInfo
 } from '../../services/pushService';
 
 interface Props {
@@ -14,12 +13,11 @@ interface Props {
   variant?: 'banner' | 'settings';
 }
 
-export const MobilePushBanner: React.FC<Props> = ({ currentUser, variant = 'banner' }) => {
+export const MobilePushBanner: React.FC<Props> = ({ currentUser, variant = 'settings' }) => {
   const [supportInfo, setSupportInfo] = useState(() => getPushSupportInfo());
   const [hasEndpoint, setHasEndpoint] = useState<boolean>(false);
   const [checked, setChecked] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
-  const [testing, setTesting] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
   const refreshStatus = async () => {
@@ -45,7 +43,6 @@ export const MobilePushBanner: React.FC<Props> = ({ currentUser, variant = 'bann
 
   const isFullyActive = supportInfo.permission === 'granted' && hasEndpoint;
 
-  // On dashboard banner variant, hide automatically once push is fully active
   if (variant === 'banner' && isFullyActive) {
     return null;
   }
@@ -69,15 +66,6 @@ export const MobilePushBanner: React.FC<Props> = ({ currentUser, variant = 'bann
     } else if (res.message) {
       setFeedback({ ok: false, text: res.message });
     }
-  };
-
-  const handleSendTest = async () => {
-    setTesting(true);
-    setFeedback(null);
-    const res = await sendTestWebPush(currentUser);
-    setTesting(false);
-    setFeedback({ ok: res.ok, text: res.message });
-    await refreshStatus();
   };
 
   if (supportInfo.requiresIOSHomeScreenInstall) {
@@ -127,12 +115,12 @@ export const MobilePushBanner: React.FC<Props> = ({ currentUser, variant = 'bann
           </div>
           <button
             type="button"
-            onClick={handleSendTest}
-            disabled={testing}
-            className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-[11px] font-bold flex items-center gap-1.5 transition shrink-0"
+            onClick={handleEnablePush}
+            disabled={loading}
+            className="px-3.5 py-2 rounded-xl bg-[#1F4E8C] hover:bg-[#163A6B] disabled:opacity-60 text-white text-[11px] font-bold flex items-center gap-1.5 transition shrink-0"
           >
-            <Send className="w-3.5 h-3.5" />
-            <span>{testing ? 'جاري الإرسال...' : 'إرسال إشعار تجريبي'}</span>
+            <BellRing className="w-3.5 h-3.5" />
+            <span>{loading ? 'جاري التفعيل...' : 'تفعيل الإشعارات الآن'}</span>
           </button>
         </div>
         {feedback && (
