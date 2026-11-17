@@ -106,6 +106,33 @@ class VapidConfigError extends Error {
   }
 }
 
+function normalizeVapidSubject(raw?: string): string {
+  const cleaned = (raw || '').trim().replace(/^["']+|["']+$/g, '');
+  if (!cleaned) return 'mailto:admin@nps-school.app';
+  const candidate =
+    !/^(mailto:|https?:\/\/)/i.test(cleaned) && cleaned.includes('@')
+      ? `mailto:${cleaned}`
+      : cleaned;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol === 'mailto:' || parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return candidate;
+    }
+  } catch {
+    // Fall through to safe default
+  }
+  return 'mailto:admin@nps-school.app';
+}
+
+function normalizeVapidKey(raw?: string): string {
+  return (raw || '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
 function isValidVapidPublicKeyFormat(publicKey: string): boolean {
   try {
     const padding = '='.repeat((4 - (publicKey.length % 4)) % 4);
@@ -161,9 +188,9 @@ async function ensureVapidKeys(): Promise<VapidKeys> {
   if (vapidInitPromise) return vapidInitPromise;
 
   vapidInitPromise = (async () => {
-    const subject = process.env.VAPID_SUBJECT?.trim() || 'mailto:admin@nps-school.app';
-    const envPub = process.env.VAPID_PUBLIC_KEY?.trim() || '';
-    const envPriv = process.env.VAPID_PRIVATE_KEY?.trim() || '';
+    const subject = normalizeVapidSubject(process.env.VAPID_SUBJECT);
+    const envPub = normalizeVapidKey(process.env.VAPID_PUBLIC_KEY);
+    const envPriv = normalizeVapidKey(process.env.VAPID_PRIVATE_KEY);
 
     if ((envPub && !envPriv) || (!envPub && envPriv)) {
       throw new VapidConfigError(
