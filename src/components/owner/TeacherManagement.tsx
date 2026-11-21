@@ -1,33 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
-  GraduationCap,
-  Plus,
   Search,
   Key,
-  Calendar,
-  Users,
   Copy,
   Printer,
-  AlertCircle,
   CheckCircle,
   FileSpreadsheet,
   Download
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { Teacher, Group, SessionInstance, AttendanceRecord } from '../../types';
+import { Teacher, Group, SessionInstance, User } from '../../types';
 import { storage } from '../../services/storage';
+import { AddTeacherModal } from './AddTeacherModal';
 
 export const TeacherManagement: React.FC = () => {
   const [teachers, setTeachers] = useState<Teacher[]>(() => storage.getTeachers());
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
-  const [selectedTeacher, setSelectedTeacher] = useState<Teacher | null>(null);
-
-  // New Teacher form
-  const [teacherName, setTeacherName] = useState('');
-  const [teacherSubject, setTeacherSubject] = useState('');
-  const [teacherPhone, setTeacherPhone] = useState('');
-  const [addError, setAddError] = useState('');
+  const [copiedSingle, setCopiedSingle] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 24;
 
   // Credentials Printout Modal (TCH-03)
   const [generatedCreds, setGeneratedCreds] = useState<{
@@ -37,11 +29,9 @@ export const TeacherManagement: React.FC = () => {
     subject: string;
   } | null>(null);
 
-  const settings = storage.getSettings();
-  const subjects = settings.subjects;
+  const users = storage.getUsers();
   const groups = storage.getGroups();
   const sessions = storage.getSessions();
-  const attendance = storage.getAttendanceRecords();
 
   useEffect(() => {
     const onCloudSync = () => setTeachers(storage.getTeachers());
@@ -53,50 +43,43 @@ export const TeacherManagement: React.FC = () => {
     setTeachers(storage.getTeachers());
   };
 
-  const handleAddTeacher = (e: React.FormEvent) => {
-    e.preventDefault();
-    setAddError('');
+  const userById = useMemo(() => {
+    const map = new Map<string, User>();
+    for (const u of users) map.set(u.id, u);
+    return map;
+  }, [users]);
 
-    if (!teacherName.trim() || !teacherSubject) {
-      setAddError('يرجى إدخال اسم المعلم واختيار المادة');
-      return;
+  const groupsByTeacherId = useMemo(() => {
+    const map = new Map<string, Group[]>();
+    for (const g of groups) {
+      const arr = map.get(g.teacherId) || [];
+      arr.push(g);
+      map.set(g.teacherId, arr);
     }
+    return map;
+  }, [groups]);
 
-    // Check duplicate (TCH-05)
-    if (teachers.some(t => t.name === teacherName.trim() && t.subject === teacherSubject)) {
-      setAddError('يوجد معلم مسجل مسبقاً بنفس الاسم والمادة التعليمية!');
-      return;
+  const sessionsByGroupId = useMemo(() => {
+    const map = new Map<string, SessionInstance[]>();
+    for (const s of sessions) {
+      const arr = map.get(s.groupId) || [];
+      arr.push(s);
+      map.set(s.groupId, arr);
     }
-
-    const res = storage.saveTeacher({
-      name: teacherName.trim(),
-      subject: teacherSubject,
-      phone: teacherPhone.trim() || undefined
-    });
-
-    setGeneratedCreds({
-      name: res.teacher.name,
-      username: res.username,
-      tempPass: res.tempPassword,
-      subject: res.teacher.subject
-    });
-
-    setTeacherName('');
-    setTeacherPhone('');
-    setShowAddModal(false);
-    refreshTeachers();
-  };
+    return map;
+  }, [sessions]);
 
   const handleResetPassword = (teacher: Teacher) => {
-    const users = storage.getUsers();
-    const user = users.find(u => u.id === teacher.userId);
+    const allUsers = storage.getUsers();
+    const user = allUsers.find(u => u.id === teacher.userId);
     if (!user) return;
 
     const tempPassword = 'NPS@1234';
 
     user.passwordHash = tempPassword;
-    storage.saveUsers(users);
+    storage.saveUsers(allUsers);
 
+    setCopiedSingle(false);
     setGeneratedCreds({
       name: teacher.name,
       username: user.username,
@@ -106,22 +89,50 @@ export const TeacherManagement: React.FC = () => {
   };
 
   const handleToggleStatus = (teacher: Teacher) => {
-    const newStatus = teacher.status === 'active' ? 'disabled' : 'active';
-    teacher.status = newStatus;
-    storage.saveTeachers(teachers);
+    const newStatus: 'active' | 'disabled' = teacher.status === 'active' ? 'disabled' : 'active';
+    const updated: Teacher[] = teachers.map(t =>
+      t.id === teacher.id ? { ...t, status: newStatus } : t
+    );
+    storage.saveTeachers(updated);
 
-    const users = storage.getUsers();
-    const u = users.find(x => x.id === teacher.userId);
+    const allUsers = storage.getUsers();
+    const u = allUsers.find(x => x.id === teacher.userId);
     if (u) {
       u.status = newStatus;
-      storage.saveUsers(users);
+      storage.saveUsers(allUsers);
     }
     refreshTeachers();
   };
 
-  const filteredTeachers = teachers.filter(
-    t => t.name.includes(searchTerm) || t.subject.includes(searchTerm)
-  );
+  const handleExportExcel = () => {
+    const data = [
+      ['اسم المعلم', 'المادة التعليمية', 'رقم الهاتف', 'اسم المستخدم', 'الحالة'],
+      ...teachers.map(t => {
+        const u = userById.get(t.userId);
+        return [
+          t.name,
+          t.subject,
+          t.phone || '',
+          u?.username || '',
+          t.status === 'active' ? 'نشط' : 'معطّل'
+        ];
+      })
+    ];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    XLSX.utils.book_append_sheet(wb, ws, 'قائمة المعلمين');
+    XLSX.writeFile(wb, `NPS_Teachers_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const filteredTeachers = useMemo(() => {
+    const q = searchTerm.trim();
+    if (!q) return teachers;
+    return teachers.filter(t => t.name.includes(q) || t.subject.includes(q));
+  }, [teachers, searchTerm]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredTeachers.length / pageSize));
+  const safePage = Math.min(currentPage, totalPages);
+  const pagedTeachers = filteredTeachers.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   return (
     <div className="space-y-5">
@@ -130,42 +141,68 @@ export const TeacherManagement: React.FC = () => {
         <div>
           <h2 className="text-lg font-bold text-slate-900">إدارة المعلمين وهيئة التدريس</h2>
           <p className="text-xs text-slate-500">
-            إجمالي المعلمين: <strong className="text-slate-800">{teachers.length}</strong> معلم
+            إجمالي المعلمين: <strong className="text-slate-800">{teachers.length.toLocaleString()}</strong> معلم
           </p>
         </div>
 
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="px-4 py-2 bg-[#1F4E8C] hover:bg-[#163A6B] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition"
-        >
-          <Plus className="w-4 h-4" />
-          <span>إضافة معلم جديد</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {teachers.length > 0 && (
+            <button
+              onClick={handleExportExcel}
+              className="px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs transition"
+            >
+              <Download className="w-4 h-4 text-emerald-600" />
+              <span>تصدير Excel</span>
+            </button>
+          )}
+
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="px-4 py-2 bg-[#1F4E8C] hover:bg-[#163A6B] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>إضافة واستيراد معلمين</span>
+          </button>
+        </div>
       </div>
 
       {/* Search */}
-      <div className="bg-white p-3 rounded-2xl border border-slate-200">
-        <div className="relative max-w-sm">
+      <div className="bg-white p-3 rounded-2xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div className="relative max-w-sm w-full">
           <input
             type="text"
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setCurrentPage(1);
+            }}
             placeholder="بحث باسم المعلم أو المادة..."
             className="w-full px-3 py-2 pr-9 text-xs rounded-xl border border-slate-300 outline-hidden focus:border-[#1F4E8C]"
           />
           <Search className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
         </div>
+        {filteredTeachers.length > pageSize && (
+          <span className="text-xs text-slate-500">
+            عرض {pagedTeachers.length} من أصل {filteredTeachers.length.toLocaleString()} معلم
+          </span>
+        )}
       </div>
 
-      {/* Teachers Grid */}
+      {/* Teachers Grid (Paginated) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredTeachers.map(teacher => {
-          const teacherGroups = groups.filter(g => g.teacherId === teacher.id);
-          const teacherSessions = sessions.filter(s => teacherGroups.some(g => g.id === s.groupId));
-          const recordedSessions = teacherSessions.filter(s => s.status === 'recorded');
-          const recordRate = teacherSessions.length > 0
-            ? Math.round((recordedSessions.length / teacherSessions.length) * 100)
-            : 100;
+        {pagedTeachers.map(teacher => {
+          const teacherGroups = groupsByTeacherId.get(teacher.id) || [];
+          let totalSess = 0;
+          let recordedSess = 0;
+          for (const g of teacherGroups) {
+            const gSessions = sessionsByGroupId.get(g.id) || [];
+            totalSess += gSessions.length;
+            for (const s of gSessions) {
+              if (s.status === 'recorded') recordedSess++;
+            }
+          }
+          const recordRate = totalSess > 0 ? Math.round((recordedSess / totalSess) * 100) : 100;
+          const teacherUser = userById.get(teacher.userId);
 
           return (
             <div
@@ -206,9 +243,15 @@ export const TeacherManagement: React.FC = () => {
                   <span>نسبة رصد الحضور:</span>
                   <strong className="text-emerald-700">{recordRate}%</strong>
                 </div>
+                {teacherUser?.username && (
+                  <div className="flex justify-between text-[11px] pt-1 border-t border-slate-200 font-mono">
+                    <span className="font-sans">كود الدخول:</span>
+                    <strong className="text-[#1F4E8C]">{teacherUser.username}</strong>
+                  </div>
+                )}
                 {teacher.phone && (
                   <div className="flex justify-between text-[11px] pt-1 border-t border-slate-200 font-mono">
-                    <span>الهاتف:</span>
+                    <span className="font-sans">الهاتف:</span>
                     <span>{teacher.phone}</span>
                   </div>
                 )}
@@ -241,95 +284,45 @@ export const TeacherManagement: React.FC = () => {
         })}
       </div>
 
-      {/* Add Teacher Modal */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
-          <form onSubmit={handleAddTeacher} className="bg-white rounded-3xl p-6 max-w-md w-full text-right shadow-2xl space-y-4">
-            <h3 className="font-bold text-base text-slate-900 pb-2 border-b border-slate-200">
-              إضافة معلم جديد
-            </h3>
-
-            {addError && (
-              <div className="p-3 bg-rose-50 text-rose-700 rounded-xl text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{addError}</span>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                اسم المعلم <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={teacherName}
-                onChange={(e) => setTeacherName(e.target.value)}
-                placeholder="مثال: أ. محمود حسني"
-                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 outline-hidden"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                المادة التعليمية والتخصص <span className="text-rose-500">*</span>
-              </label>
-              <select
-                value={teacherSubject}
-                onChange={(e) => setTeacherSubject(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 outline-hidden bg-white"
-                required
-              >
-                <option value="">-- اختر المادة --</option>
-                {subjects.map(s => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                رقم الهاتف (اختياري)
-              </label>
-              <input
-                type="tel"
-                value={teacherPhone}
-                onChange={(e) => setTeacherPhone(e.target.value)}
-                placeholder="مثال: 01012345678"
-                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 font-mono outline-hidden"
-              />
-            </div>
-
-            <div className="p-3 bg-blue-50/60 rounded-xl text-[11px] text-blue-900 leading-relaxed">
-              سيتم توليد كود دخول تلقائي (T001...) وكلمة مرور عشوائية مؤقتة تظهر لك لمرة واحدة لتسليمها للمعلم.
-            </div>
-
-            <div className="flex gap-2 pt-2">
-              <button
-                type="submit"
-                className="flex-1 py-2.5 bg-[#1F4E8C] text-white rounded-xl text-xs font-bold hover:bg-[#163A6B]"
-              >
-                حفظ وإصدار بيانات الدخول
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowAddModal(false)}
-                className="py-2.5 px-4 bg-slate-100 text-slate-700 rounded-xl text-xs font-semibold"
-              >
-                إلغاء
-              </button>
-            </div>
-          </form>
+      {/* Pagination Bar */}
+      {totalPages > 1 && (
+        <div className="p-4 bg-white rounded-2xl border border-slate-200 flex items-center justify-between text-xs">
+          <span className="text-slate-600">
+            الصفحة <strong>{safePage}</strong> من <strong>{totalPages}</strong> (إجمالي {filteredTeachers.length.toLocaleString()} معلم)
+          </span>
+          <div className="flex gap-1.5">
+            <button
+              disabled={safePage <= 1}
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              className="px-3.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200 disabled:opacity-40 font-bold hover:bg-slate-100"
+            >
+              السابق
+            </button>
+            <button
+              disabled={safePage >= totalPages}
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              className="px-3.5 py-1.5 rounded-lg bg-slate-50 border border-slate-200 disabled:opacity-40 font-bold hover:bg-slate-100"
+            >
+              التالي
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Generated Credentials Popup (TCH-03 - Shown once) */}
+      {/* Multi-Mode Add / Import Teacher Modal */}
+      <AddTeacherModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onSuccess={refreshTeachers}
+      />
+
+      {/* Generated Credentials Popup (TCH-03 - Reset password) */}
       {generatedCreds && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
           <div className="bg-white rounded-3xl p-6 max-w-md w-full text-right shadow-2xl space-y-4">
             <div className="flex items-center gap-2 text-emerald-800 font-bold text-base">
               <CheckCircle className="w-6 h-6 text-emerald-600" />
-              <span>بيانات حساب دخول المعلم (تظهر مرة واحدة)</span>
+              <span>بيانات حساب دخول المعلم</span>
             </div>
 
             <p className="text-xs text-slate-600">
@@ -362,12 +355,13 @@ export const TeacherManagement: React.FC = () => {
                   navigator.clipboard.writeText(
                     `بيانات حساب المعلم: ${generatedCreds.name}\nاسم المستخدم: ${generatedCreds.username}\nكلمة المرور: ${generatedCreds.tempPass}`
                   );
-                  alert('تم نسخ بيانات الدخول إلى الحافظة!');
+                  setCopiedSingle(true);
+                  setTimeout(() => setCopiedSingle(false), 2500);
                 }}
                 className="flex-1 py-2.5 bg-[#1F4E8C] text-white rounded-xl text-xs font-bold hover:bg-[#163A6B] flex items-center justify-center gap-1.5"
               >
                 <Copy className="w-4 h-4" />
-                <span>نسخ البيانات</span>
+                <span>{copiedSingle ? 'تم النسخ!' : 'نسخ البيانات'}</span>
               </button>
               <button
                 type="button"
@@ -391,3 +385,4 @@ export const TeacherManagement: React.FC = () => {
     </div>
   );
 };
+

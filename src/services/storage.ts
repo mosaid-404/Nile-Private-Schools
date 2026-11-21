@@ -1,6 +1,15 @@
-import { collection, doc, getDocs, getDocsFromServer, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, getDocsFromServer, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { dispatchRemoteWebPush } from './pushService';
+import {
+  idbLoadAll,
+  idbPut,
+  idbPutMany,
+  writeKeyToFirestoreChunked,
+  reassembleCloudStoreDocs,
+  LOCAL_STORAGE_MAX_CHARS,
+  CHUNK_SUFFIX
+} from './localStore';
 
 enum OperationType {
   CREATE = 'create',
@@ -150,10 +159,24 @@ export const DEFAULT_SETTINGS: SchoolSettings = {
 };
 
 class StorageService {
+  private memCache = new Map<string, unknown>();
+  private rawCache = new Map<string, string>();
+  private idbHydrated = false;
+  private idbHydratePromise: Promise<void> | null = null;
+
   private get<T>(key: string, defaultValue: T): T {
+    if (this.memCache.has(key)) {
+      return this.memCache.get(key) as T;
+    }
     try {
       const data = localStorage.getItem(key);
-      return data ? JSON.parse(data) : defaultValue;
+      if (data !== null) {
+        const parsed = JSON.parse(data) as T;
+        this.memCache.set(key, parsed);
+        this.rawCache.set(key, data);
+        return parsed;
+      }
+      return defaultValue;
     } catch {
       return defaultValue;
     }
@@ -162,6 +185,48 @@ class StorageService {
   private isSyncingFromCloud = false;
   private cloudHydrated = false;
   private initialSyncPromise: Promise<void> | null = null;
+
+  private async hydrateFromIndexedDB(): Promise<void> {
+    if (this.idbHydrated) return;
+    if (!this.idbHydratePromise) {
+      this.idbHydratePromise = (async () => {
+        const all = await idbLoadAll();
+        for (const [key, raw] of Object.entries(all)) {
+          if (!this.rawCache.has(key)) {
+            try {
+              const parsed = JSON.parse(raw);
+              this.memCache.set(key, parsed);
+              this.rawCache.set(key, raw);
+            } catch {
+              // ignore corrupted idb record
+            }
+          }
+        }
+        this.idbHydrated = true;
+      })();
+    }
+    return this.idbHydratePromise;
+  }
+
+  private writeLocalMirrors(key: string, serialized: string): void {
+    this.rawCache.set(key, serialized);
+    void idbPut(key, serialized);
+    try {
+      if (serialized.length <= LOCAL_STORAGE_MAX_CHARS) {
+        localStorage.setItem(key, serialized);
+      } else {
+        // Keep localStorage clean under 5MB limit while IndexedDB holds large datasets
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // Fallback: if localStorage is near quota, evict this large key safely since IndexedDB + memCache hold it
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // ignore
+      }
+    }
+  }
 
   private getSyncKeys(): string[] {
     return Object.values(STORAGE_KEYS).filter(
@@ -175,22 +240,25 @@ class StorageService {
 
   private setLocalOnly<T>(key: string, value: T): void {
     try {
-      localStorage.setItem(key, JSON.stringify(value));
+      this.memCache.set(key, value);
+      const serialized = JSON.stringify(value);
+      this.writeLocalMirrors(key, serialized);
     } catch (e) {
-      console.error(`Error saving to localStorage key "${key}":`, e);
+      console.error(`Error saving key "${key}":`, e);
     }
   }
 
   private setLocalIfMissing<T>(key: string, value: T): void {
-    if (localStorage.getItem(key) === null) {
+    if (!this.memCache.has(key) && localStorage.getItem(key) === null) {
       this.setLocalOnly(key, value);
     }
   }
 
   private set<T>(key: string, value: T): void {
     try {
+      this.memCache.set(key, value);
       const serialized = JSON.stringify(value);
-      localStorage.setItem(key, serialized);
+      this.writeLocalMirrors(key, serialized);
 
       const localOnlyKeys: string[] = [
         STORAGE_KEYS.CURRENT_USER,
@@ -199,15 +267,12 @@ class StorageService {
         STORAGE_KEYS.INITIALIZED
       ];
       if (!this.isSyncingFromCloud && !localOnlyKeys.includes(key)) {
-        setDoc(doc(db, 'nps_store', key), {
-          value: serialized,
-          updatedAt: new Date().toISOString()
-        }).catch((err) => {
-          logFirestoreError(err, OperationType.WRITE, `nps_store/${key}`);
+        void writeKeyToFirestoreChunked(key, serialized, (err, path) => {
+          logFirestoreError(err, OperationType.WRITE, path);
         });
       }
     } catch (e) {
-      console.error(`Error saving to localStorage key "${key}":`, e);
+      console.error(`Error saving key "${key}":`, e);
     }
   }
 
@@ -269,6 +334,7 @@ class StorageService {
 
   private async hydrateFromCloudServer(): Promise<void> {
     try {
+      await this.hydrateFromIndexedDB();
       const storeCol = collection(db, 'nps_store');
       let serverSnap;
       const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
@@ -288,17 +354,44 @@ class StorageService {
       }
 
       if (!serverSnap.empty) {
+        const rawDocs = serverSnap.docs
+          .map((d) => ({ id: d.id, value: d.data()?.value }))
+          .filter((d): d is { id: string; value: string } => typeof d.value === 'string');
+
+        const assembled = reassembleCloudStoreDocs(rawDocs);
+        const idbBatch: Array<[string, string]> = [];
+
         this.isSyncingFromCloud = true;
         try {
-          serverSnap.docs.forEach((docSnap) => {
-            const key = docSnap.id;
-            const cloudVal = docSnap.data()?.value;
-            if (typeof cloudVal === 'string') {
-              localStorage.setItem(key, cloudVal);
+          for (const { key, value: cloudVal } of assembled) {
+            if (this.rawCache.get(key) !== cloudVal) {
+              try {
+                this.memCache.set(key, JSON.parse(cloudVal));
+                this.rawCache.set(key, cloudVal);
+                idbBatch.push([key, cloudVal]);
+                if (cloudVal.length <= LOCAL_STORAGE_MAX_CHARS) {
+                  try {
+                    localStorage.setItem(key, cloudVal);
+                  } catch {
+                    // ignore
+                  }
+                } else {
+                  try {
+                    localStorage.removeItem(key);
+                  } catch {
+                    // ignore
+                  }
+                }
+              } catch {
+                // ignore parse error
+              }
             }
-          });
+          }
         } finally {
           this.isSyncingFromCloud = false;
+        }
+        if (idbBatch.length > 0) {
+          void idbPutMany(idbBatch);
         }
         this.normalizeAdminDisplayNameLocally();
         this.syncCurrentUserFromUsers();
@@ -312,13 +405,10 @@ class StorageService {
         const syncKeys = this.getSyncKeys();
         await Promise.all(
           syncKeys.map((key) => {
-            const localVal = localStorage.getItem(key);
+            const localVal = this.rawCache.get(key) ?? localStorage.getItem(key);
             if (!localVal) return Promise.resolve();
-            return setDoc(doc(db, 'nps_store', key), {
-              value: localVal,
-              updatedAt: new Date().toISOString()
-            }).catch((err) => {
-              logFirestoreError(err, OperationType.WRITE, `nps_store/${key}`);
+            return writeKeyToFirestoreChunked(key, localVal, (err, path) => {
+              logFirestoreError(err, OperationType.WRITE, path);
             });
           })
         );
@@ -330,13 +420,16 @@ class StorageService {
     }
   }
 
-  public waitForInitialCloudSync(timeoutMs = 2500): Promise<void> {
-    this.ensureLocalDefaults();
+  public waitForInitialCloudSync(timeoutMs = 5000): Promise<void> {
     if (!this.initialSyncPromise) {
-      this.initialSyncPromise = Promise.race([
-        this.hydrateFromCloudServer(),
-        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
-      ]);
+      this.initialSyncPromise = (async () => {
+        await this.hydrateFromIndexedDB();
+        this.ensureLocalDefaults();
+        await Promise.race([
+          this.hydrateFromCloudServer(),
+          new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+        ]);
+      })();
     }
     return this.initialSyncPromise;
   }
@@ -354,23 +447,51 @@ class StorageService {
         }
 
         let changed = false;
-        const previousNotificationsRaw = localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS);
         const previousNotifIds = new Set<string>(
-          previousNotificationsRaw ? (JSON.parse(previousNotificationsRaw) as AppNotification[]).map(n => n.id) : []
+          this.get<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, []).map(n => n.id)
         );
+
+        const rawDocs = snapshot.docs
+          .map((d) => ({ id: d.id, value: d.data()?.value }))
+          .filter((d): d is { id: string; value: string } => typeof d.value === 'string');
+
+        const assembled = reassembleCloudStoreDocs(rawDocs);
+        const idbBatch: Array<[string, string]> = [];
 
         this.isSyncingFromCloud = true;
         try {
-          snapshot.docs.forEach((docSnap) => {
-            const key = docSnap.id;
-            const cloudVal = docSnap.data()?.value;
-            if (typeof cloudVal === 'string' && localStorage.getItem(key) !== cloudVal) {
-              localStorage.setItem(key, cloudVal);
-              changed = true;
+          for (const { key, value: cloudVal } of assembled) {
+            if (key.includes(CHUNK_SUFFIX)) continue;
+            if (this.rawCache.get(key) !== cloudVal) {
+              try {
+                this.memCache.set(key, JSON.parse(cloudVal));
+                this.rawCache.set(key, cloudVal);
+                idbBatch.push([key, cloudVal]);
+                if (cloudVal.length <= LOCAL_STORAGE_MAX_CHARS) {
+                  try {
+                    localStorage.setItem(key, cloudVal);
+                  } catch {
+                    // ignore
+                  }
+                } else {
+                  try {
+                    localStorage.removeItem(key);
+                  } catch {
+                    // ignore
+                  }
+                }
+                changed = true;
+              } catch {
+                // ignore malformed json
+              }
             }
-          });
+          }
         } finally {
           this.isSyncingFromCloud = false;
+        }
+
+        if (idbBatch.length > 0) {
+          void idbPutMany(idbBatch);
         }
 
         this.cloudHydrated = true;
@@ -512,14 +633,12 @@ class StorageService {
     const cloudWrites: Promise<void>[] = [];
     for (const [key, value] of updates) {
       const serialized = JSON.stringify(value);
-      localStorage.setItem(key, serialized);
+      this.memCache.set(key, value);
+      this.writeLocalMirrors(key, serialized);
       if (!localOnlyKeys.includes(key)) {
         cloudWrites.push(
-          setDoc(doc(db, 'nps_store', key), {
-            value: serialized,
-            updatedAt: new Date().toISOString()
-          }).catch((err) => {
-            logFirestoreError(err, OperationType.WRITE, `nps_store/${key}`);
+          writeKeyToFirestoreChunked(key, serialized, (err, path) => {
+            logFirestoreError(err, OperationType.WRITE, path);
           })
         );
       }
@@ -684,6 +803,179 @@ class StorageService {
     this.syncStudentWithClassGroups(newStudent);
 
     return { success: true, student: newStudent };
+  }
+
+  public async saveStudentsBulkAsync(
+    items: Omit<Student, 'id' | 'createdAt' | 'parentId'>[],
+    onProgress?: (processed: number, total: number) => void
+  ): Promise<{ addedCount: number; skippedCount: number; parentsCreated: number }> {
+    const students = [...this.getStudents()];
+    const parents = [...this.getParents()];
+    const users = [...this.getUsers()];
+    const classes = [...this.getClasses()];
+    const groups = [...this.getGroups()];
+
+    const existingCodes = new Set<string>(students.map(s => s.code.trim()));
+    const parentByPhone = new Map<string, Parent>(parents.map(p => [p.phone, p]));
+    const userByUsername = new Map<string, User>(users.map(u => [u.username.toLowerCase(), u]));
+    const classByKey = new Map<string, SchoolClass>(
+      classes.map(c => [`${c.grade}||${c.classNumber}`, c])
+    );
+
+    const classGroupsByClassId = new Map<string, { group: Group; memberSet: Set<string> }[]>();
+    for (const group of groups) {
+      if (group.mode === 'class' && group.classIds && group.classIds.length > 0) {
+        const memberSet = new Set(group.studentIds);
+        for (const cid of group.classIds) {
+          const arr = classGroupsByClassId.get(cid) || [];
+          arr.push({ group, memberSet });
+          classGroupsByClassId.set(cid, arr);
+        }
+      }
+    }
+
+    const forceParentPassChange = this.getSettings().forceParentPasswordChange;
+    const nowMs = Date.now();
+    const createdAtIso = new Date(nowMs).toISOString();
+
+    let addedCount = 0;
+    let skippedCount = 0;
+    let parentsCreated = 0;
+    let classesChanged = false;
+    let parentsChanged = false;
+    let usersChanged = false;
+    let groupsChanged = false;
+
+    const CHUNK_SIZE = 500;
+    for (let start = 0; start < items.length; start += CHUNK_SIZE) {
+      const end = Math.min(start + CHUNK_SIZE, items.length);
+
+      for (let idx = start; idx < end; idx++) {
+        const item = items[idx];
+        const cleanCode = item.code.trim();
+        const cleanName = item.name.trim();
+        if (!cleanCode || !cleanName || cleanName.length < 3 || existingCodes.has(cleanCode)) {
+          skippedCount++;
+          continue;
+        }
+
+        const phoneCheck = cleanEgyptianPhone(item.parentPhone);
+        if (!phoneCheck.isValid) {
+          skippedCount++;
+          continue;
+        }
+
+        existingCodes.add(cleanCode);
+        const cleanedPhone = phoneCheck.cleaned;
+        const suffix = `${nowMs}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+
+        // 1. O(1) Parent & User Lookup/Create
+        let parent = parentByPhone.get(cleanedPhone);
+        if (!parent) {
+          const parentId = `prt_${suffix}`;
+          const userId = `usr_prt_${suffix}`;
+          const displayName = `ولي أمر الطالب ${cleanName}`;
+          parent = {
+            id: parentId,
+            displayName,
+            phone: cleanedPhone,
+            userId,
+            studentIds: [],
+            createdAt: createdAtIso
+          };
+          parents.push(parent);
+          parentByPhone.set(cleanedPhone, parent);
+          parentsCreated++;
+          parentsChanged = true;
+
+          if (!userByUsername.has(cleanedPhone.toLowerCase())) {
+            const newUser: User = {
+              id: userId,
+              username: cleanedPhone,
+              displayName,
+              role: 'parent',
+              status: 'active',
+              passwordHash: cleanedPhone,
+              mustChangePassword: forceParentPassChange,
+              phone: cleanedPhone,
+              relatedId: parentId,
+              createdAt: createdAtIso
+            };
+            users.push(newUser);
+            userByUsername.set(cleanedPhone.toLowerCase(), newUser);
+            usersChanged = true;
+          }
+        }
+
+        // 2. O(1) Class Lookup/Create
+        const classKey = `${item.grade}||${item.classNumber}`;
+        let cls = classByKey.get(classKey);
+        if (!cls) {
+          cls = {
+            id: `cls_${suffix}`,
+            grade: item.grade,
+            classNumber: item.classNumber
+          };
+          classes.push(cls);
+          classByKey.set(classKey, cls);
+          classesChanged = true;
+        }
+
+        // 3. Create Student
+        const newStudent: Student = {
+          ...item,
+          id: `stu_${suffix}`,
+          code: cleanCode,
+          name: cleanName,
+          parentPhone: cleanedPhone,
+          parentId: parent.id,
+          createdAt: createdAtIso
+        };
+        students.push(newStudent);
+        addedCount++;
+
+        // 4. Link Parent -> Student
+        parent.studentIds.push(newStudent.id);
+        parentsChanged = true;
+
+        // 5. O(1) Sync with class groups
+        const matchedGroups = classGroupsByClassId.get(cls.id);
+        if (matchedGroups && newStudent.status === 'active') {
+          for (const { group, memberSet } of matchedGroups) {
+            if (!memberSet.has(newStudent.id)) {
+              memberSet.add(newStudent.id);
+              group.studentIds.push(newStudent.id);
+              groupsChanged = true;
+            }
+          }
+        }
+      }
+
+      onProgress?.(end, items.length);
+      if (end < items.length) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    if (addedCount > 0) {
+      if (classesChanged) this.set(STORAGE_KEYS.CLASSES, classes);
+      if (parentsChanged) this.set(STORAGE_KEYS.PARENTS, parents);
+      if (usersChanged) this.saveUsers(users);
+      if (groupsChanged) this.set(STORAGE_KEYS.GROUPS, groups);
+      this.set(STORAGE_KEYS.STUDENTS, students);
+
+      const currentUser = this.getCurrentUser();
+      this.logAudit(
+        currentUser?.id || 'sys',
+        currentUser?.displayName || 'الإدارة',
+        'إضافة طلاب دفعة واحدة',
+        'Student',
+        'bulk',
+        `تمت إضافة ${addedCount} طالب، وإنشاء ${parentsCreated} حساب ولي أمر، وتخطي ${skippedCount} صف`
+      );
+    }
+
+    return { addedCount, skippedCount, parentsCreated };
   }
 
   public updateStudent(student: Student): void {
@@ -866,23 +1158,46 @@ class StorageService {
     this.set(STORAGE_KEYS.TEACHERS, teachers);
   }
 
+  private getNextTeacherCounter(users: User[]): number {
+    let maxCounter = 0;
+    for (const u of users) {
+      const match = /^TEACHER_(\d+)$/i.exec(u.username || '');
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num) && num > maxCounter) {
+          maxCounter = num;
+        }
+      }
+    }
+    const teachers = this.getTeachers();
+    if (teachers.length > maxCounter) {
+      maxCounter = teachers.length;
+    }
+    return maxCounter + 1;
+  }
+
   public saveTeacher(data: { name: string; subject: string; phone?: string }): { teacher: Teacher; tempPassword: string; username: string } {
     const teachers = this.getTeachers();
+    const users = this.getUsers();
+    const existingUsernames = new Set(users.map(u => u.username.toLowerCase()));
+
     const teacherId = `tch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const userId = `usr_tch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-    // Generate automatic longer username TEACHER_0001, TEACHER_0002...
-    const count = teachers.length + 1;
-    const username = `TEACHER_${count.toString().padStart(4, '0')}`;
-    
-    // Fixed default password for teachers
+    let counter = this.getNextTeacherCounter(users);
+    let username = `TEACHER_${counter.toString().padStart(4, '0')}`;
+    while (existingUsernames.has(username.toLowerCase())) {
+      counter++;
+      username = `TEACHER_${counter.toString().padStart(4, '0')}`;
+    }
+
     const tempPassword = 'NPS@1234';
 
     const teacher: Teacher = {
       id: teacherId,
       name: data.name.trim(),
       subject: data.subject.trim(),
-      phone: data.phone?.trim(),
+      phone: data.phone?.trim() || undefined,
       userId,
       status: 'active',
       createdAt: new Date().toISOString()
@@ -904,11 +1219,210 @@ class StorageService {
     teachers.push(teacher);
     this.set(STORAGE_KEYS.TEACHERS, teachers);
 
-    const users = this.getUsers();
     users.push(user);
     this.saveUsers(users);
 
     return { teacher, tempPassword, username };
+  }
+
+  public saveTeachersBulk(
+    items: { name: string; subject: string; phone?: string }[]
+  ): {
+    added: { teacher: Teacher; username: string; tempPassword: string }[];
+    skippedCount: number;
+  } {
+    const teachers = this.getTeachers();
+    const users = this.getUsers();
+    const existingKeys = new Set(
+      teachers.map(t => `${t.name.trim().toLowerCase()}||${t.subject.trim().toLowerCase()}`)
+    );
+    const existingUsernames = new Set(users.map(u => u.username.toLowerCase()));
+
+    let counter = this.getNextTeacherCounter(users);
+    const added: { teacher: Teacher; username: string; tempPassword: string }[] = [];
+    let skippedCount = 0;
+    const nowMs = Date.now();
+    const tempPassword = 'NPS@1234';
+
+    items.forEach((item, idx) => {
+      const cleanName = item.name.trim();
+      const cleanSubject = item.subject.trim();
+      const cleanPhone = item.phone?.trim() || undefined;
+
+      if (!cleanName || cleanName.length < 3 || !cleanSubject) {
+        skippedCount++;
+        return;
+      }
+
+      const dupKey = `${cleanName.toLowerCase()}||${cleanSubject.toLowerCase()}`;
+      if (existingKeys.has(dupKey)) {
+        skippedCount++;
+        return;
+      }
+      existingKeys.add(dupKey);
+
+      let username = `TEACHER_${counter.toString().padStart(4, '0')}`;
+      while (existingUsernames.has(username.toLowerCase())) {
+        counter++;
+        username = `TEACHER_${counter.toString().padStart(4, '0')}`;
+      }
+      existingUsernames.add(username.toLowerCase());
+      counter++;
+
+      const suffix = `${nowMs}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+      const teacherId = `tch_${suffix}`;
+      const userId = `usr_tch_${suffix}`;
+      const createdAt = new Date().toISOString();
+
+      const teacher: Teacher = {
+        id: teacherId,
+        name: cleanName,
+        subject: cleanSubject,
+        phone: cleanPhone,
+        userId,
+        status: 'active',
+        createdAt
+      };
+
+      const user: User = {
+        id: userId,
+        username,
+        displayName: cleanName,
+        role: 'teacher',
+        status: 'active',
+        passwordHash: tempPassword,
+        mustChangePassword: false,
+        phone: cleanPhone,
+        relatedId: teacherId,
+        createdAt
+      };
+
+      teachers.push(teacher);
+      users.push(user);
+      added.push({ teacher, username, tempPassword });
+    });
+
+    if (added.length > 0) {
+      this.set(STORAGE_KEYS.TEACHERS, teachers);
+      this.saveUsers(users);
+      const currentUser = this.getCurrentUser();
+      this.logAudit(
+        currentUser?.id || 'sys',
+        currentUser?.displayName || 'الإدارة',
+        'إضافة معلمين دفعة واحدة',
+        'Teacher',
+        'bulk',
+        `تمت إضافة ${added.length} معلم وتخطي ${skippedCount} صف`
+      );
+    }
+
+    return { added, skippedCount };
+  }
+
+  public async saveTeachersBulkAsync(
+    items: { name: string; subject: string; phone?: string }[],
+    onProgress?: (processed: number, total: number) => void
+  ): Promise<{
+    added: { teacher: Teacher; username: string; tempPassword: string }[];
+    skippedCount: number;
+  }> {
+    const teachers = [...this.getTeachers()];
+    const users = [...this.getUsers()];
+    const existingKeys = new Set(
+      teachers.map(t => `${t.name.trim().toLowerCase()}||${t.subject.trim().toLowerCase()}`)
+    );
+    const existingUsernames = new Set(users.map(u => u.username.toLowerCase()));
+
+    let counter = this.getNextTeacherCounter(users);
+    const added: { teacher: Teacher; username: string; tempPassword: string }[] = [];
+    let skippedCount = 0;
+    const nowMs = Date.now();
+    const createdAt = new Date(nowMs).toISOString();
+    const tempPassword = 'NPS@1234';
+
+    const CHUNK_SIZE = 500;
+    for (let start = 0; start < items.length; start += CHUNK_SIZE) {
+      const end = Math.min(start + CHUNK_SIZE, items.length);
+
+      for (let idx = start; idx < end; idx++) {
+        const item = items[idx];
+        const cleanName = item.name.trim();
+        const cleanSubject = item.subject.trim();
+        const cleanPhone = item.phone?.trim() || undefined;
+
+        if (!cleanName || cleanName.length < 3 || !cleanSubject) {
+          skippedCount++;
+          continue;
+        }
+
+        const dupKey = `${cleanName.toLowerCase()}||${cleanSubject.toLowerCase()}`;
+        if (existingKeys.has(dupKey)) {
+          skippedCount++;
+          continue;
+        }
+        existingKeys.add(dupKey);
+
+        let username = `TEACHER_${counter.toString().padStart(4, '0')}`;
+        while (existingUsernames.has(username.toLowerCase())) {
+          counter++;
+          username = `TEACHER_${counter.toString().padStart(4, '0')}`;
+        }
+        existingUsernames.add(username.toLowerCase());
+        counter++;
+
+        const suffix = `${nowMs}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+        const teacherId = `tch_${suffix}`;
+        const userId = `usr_tch_${suffix}`;
+
+        const teacher: Teacher = {
+          id: teacherId,
+          name: cleanName,
+          subject: cleanSubject,
+          phone: cleanPhone,
+          userId,
+          status: 'active',
+          createdAt
+        };
+
+        const user: User = {
+          id: userId,
+          username,
+          displayName: cleanName,
+          role: 'teacher',
+          status: 'active',
+          passwordHash: tempPassword,
+          mustChangePassword: false,
+          phone: cleanPhone,
+          relatedId: teacherId,
+          createdAt
+        };
+
+        teachers.push(teacher);
+        users.push(user);
+        added.push({ teacher, username, tempPassword });
+      }
+
+      onProgress?.(end, items.length);
+      if (end < items.length) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    if (added.length > 0) {
+      this.set(STORAGE_KEYS.TEACHERS, teachers);
+      this.saveUsers(users);
+      const currentUser = this.getCurrentUser();
+      this.logAudit(
+        currentUser?.id || 'sys',
+        currentUser?.displayName || 'الإدارة',
+        'إضافة معلمين دفعة واحدة',
+        'Teacher',
+        'bulk',
+        `تمت إضافة ${added.length} معلم وتخطي ${skippedCount} صف`
+      );
+    }
+
+    return { added, skippedCount };
   }
 
   // --- Classes & Groups ---

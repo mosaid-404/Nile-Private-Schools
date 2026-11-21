@@ -35,6 +35,7 @@ interface StoredPushSubscriptionRecord {
   phone?: string;
   relatedId?: string;
   deviceLabel?: string;
+  vapidPublicKey?: string;
   updatedAt: string;
 }
 
@@ -42,6 +43,7 @@ const VAPID_PUBLIC_DOC_KEY = 'nps_vapid_public_key';
 const VAPID_KEYS_DOC_KEY = 'nps_vapid_keys';
 const SUBS_DOC_KEY = 'nps_push_subscriptions';
 const PUSH_OUTBOX_DOC_KEY = 'nps_push_outbox';
+const LAST_VAPID_KEY_STORAGE = 'nps_last_vapid_public_key';
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const cleaned = base64String.trim();
@@ -359,11 +361,19 @@ export async function ensurePushSubscription(
     }
 
     const expectedKeyBytes = keyResult.keyBytes;
+    const expectedPubKey = keyResult.publicKey || '';
+    const prevSavedVapidKey = localStorage.getItem(LAST_VAPID_KEY_STORAGE);
     let subscription = await reg.pushManager.getSubscription();
 
-    if (subscription?.options?.applicationServerKey) {
-      const existingBytes = new Uint8Array(subscription.options.applicationServerKey);
-      if (!uint8ArraysEqual(existingBytes, expectedKeyBytes)) {
+    if (subscription) {
+      let keyMismatch = Boolean(prevSavedVapidKey && expectedPubKey && prevSavedVapidKey !== expectedPubKey);
+      if (subscription.options?.applicationServerKey) {
+        const existingBytes = new Uint8Array(subscription.options.applicationServerKey);
+        if (!uint8ArraysEqual(existingBytes, expectedKeyBytes)) {
+          keyMismatch = true;
+        }
+      }
+      if (keyMismatch) {
         await subscription.unsubscribe().catch(() => {});
         subscription = null;
       }
@@ -418,6 +428,7 @@ export async function ensurePushSubscription(
       phone: user.phone,
       relatedId: user.relatedId,
       deviceLabel,
+      vapidPublicKey: expectedPubKey || undefined,
       updatedAt: new Date().toISOString()
     };
 
@@ -432,7 +443,8 @@ export async function ensurePushSubscription(
           role: user.role,
           phone: user.phone,
           relatedId: user.relatedId,
-          deviceLabel
+          deviceLabel,
+          vapidPublicKey: expectedPubKey || undefined
         })
       });
       const ct = (saveRes.headers.get('content-type') || '').toLowerCase();
@@ -453,6 +465,10 @@ export async function ensurePushSubscription(
         code: 'SUBSCRIBE_PERSIST_FAILED',
         message: 'تعذر حفظ اشتراك إشعارات الهاتف على الخادم أو قاعدة البيانات.'
       };
+    }
+
+    if (expectedPubKey) {
+      localStorage.setItem(LAST_VAPID_KEY_STORAGE, expectedPubKey);
     }
 
     window.dispatchEvent(new Event('nps_push_status_changed'));

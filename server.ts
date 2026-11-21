@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import type { PushSubscription as WebPushSubscription } from 'web-push';
@@ -40,6 +41,7 @@ interface StoredPushSubscription {
   phone?: string;
   relatedId?: string;
   deviceLabel?: string;
+  vapidPublicKey?: string;
   updatedAt: string;
 }
 
@@ -144,6 +146,20 @@ function isValidVapidPublicKeyFormat(publicKey: string): boolean {
   }
 }
 
+function doVapidKeysMatch(publicKey: string, privateKey: string): boolean {
+  try {
+    const pad = (s: string) => s + '='.repeat((4 - (s.length % 4)) % 4);
+    const privBuf = Buffer.from(pad(privateKey).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+    if (privBuf.length !== 32) return false;
+    const ecdh = crypto.createECDH('prime256v1');
+    ecdh.setPrivateKey(privBuf);
+    const derivedPub = normalizeVapidKey(ecdh.getPublicKey().toString('base64'));
+    return derivedPub === normalizeVapidKey(publicKey);
+  } catch {
+    return false;
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -208,19 +224,25 @@ async function ensureVapidKeys(): Promise<VapidKeys> {
           'Invalid P-256 uncompressed public key'
         );
       }
-      try {
-        webpush.setVapidDetails(subject, envPub, envPriv);
-      } catch (err) {
-        throw new VapidConfigError(
-          'VAPID_ENV_INVALID',
-          'فشل التحقق من صحة مفاتيح VAPID في متغيرات البيئة.',
-          err instanceof Error ? err.message : String(err)
+      if (!doVapidKeysMatch(envPub, envPriv)) {
+        console.warn(
+          '[WebPush] VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in environment do not match each other; falling back to stored/generated VAPID keypair.'
         );
+      } else {
+        try {
+          webpush.setVapidDetails(subject, envPub, envPriv);
+          cachedVapidKeys = { publicKey: envPub, privateKey: envPriv };
+          cachedVapidSource = 'env';
+          void writeStoreValue(VAPID_PUBLIC_DOC_KEY, { publicKey: envPub });
+          return cachedVapidKeys;
+        } catch (err) {
+          throw new VapidConfigError(
+            'VAPID_ENV_INVALID',
+            'فشل التحقق من صحة مفاتيح VAPID في متغيرات البيئة.',
+            err instanceof Error ? err.message : String(err)
+          );
+        }
       }
-      cachedVapidKeys = { publicKey: envPub, privateKey: envPriv };
-      cachedVapidSource = 'env';
-      void writeStoreValue(VAPID_PUBLIC_DOC_KEY, { publicKey: envPub });
-      return cachedVapidKeys;
     }
 
     const fromDb = await readStoreValue<VapidKeys | null>(VAPID_DOC_KEY, null);
@@ -363,6 +385,11 @@ async function dispatchSendPush(params: SendPushParams): Promise<{ sent: number;
     }
   }
 
+  const currentPubKey = cachedVapidKeys?.publicKey;
+  if (currentPubKey) {
+    matches = matches.filter((sub) => !sub.vapidPublicKey || sub.vapidPublicKey === currentPubKey);
+  }
+
   if (matches.length === 0) {
     return { sent: 0, failed: 0, cleaned: 0 };
   }
@@ -376,7 +403,7 @@ async function dispatchSendPush(params: SendPushParams): Promise<{ sent: number;
     tag: params.notifId ? `nps_${params.notifId}` : `nps_${Date.now()}`
   });
 
-  const expiredEndpoints = new Set<string>();
+  const staleEndpoints = new Set<string>();
   let sent = 0;
   let failed = 0;
 
@@ -394,8 +421,9 @@ async function dispatchSendPush(params: SendPushParams): Promise<{ sent: number;
           typeof err === 'object' && err !== null && 'statusCode' in err
             ? (err as { statusCode?: number }).statusCode
             : undefined;
-        if (statusCode === 404 || statusCode === 410) {
-          expiredEndpoints.add(sub.endpoint);
+        // 401/403 = VAPID key mismatch from a previous key rotation; 404/410 = expired subscription
+        if (statusCode === 401 || statusCode === 403 || statusCode === 404 || statusCode === 410) {
+          staleEndpoints.add(sub.endpoint);
         } else {
           console.warn('WebPush send failure:', statusCode, err);
         }
@@ -403,12 +431,12 @@ async function dispatchSendPush(params: SendPushParams): Promise<{ sent: number;
     })
   );
 
-  if (expiredEndpoints.size > 0) {
-    const cleanedList = list.filter((s) => !expiredEndpoints.has(s.endpoint));
+  if (staleEndpoints.size > 0) {
+    const cleanedList = list.filter((s) => !staleEndpoints.has(s.endpoint));
     await saveSubscriptions(cleanedList);
   }
 
-  return { sent, failed, cleaned: expiredEndpoints.size };
+  return { sent, failed, cleaned: staleEndpoints.size };
 }
 
 async function dispatchTestPush(params: { endpoint?: string; userId?: string; phone?: string }): Promise<{ found: number; sent: number }> {
@@ -434,7 +462,7 @@ async function dispatchTestPush(params: { endpoint?: string; userId?: string; ph
   });
 
   let sent = 0;
-  const expired = new Set<string>();
+  const stale = new Set<string>();
   await Promise.all(
     targets.map(async (sub) => {
       try {
@@ -448,15 +476,17 @@ async function dispatchTestPush(params: { endpoint?: string; userId?: string; ph
           typeof err === 'object' && err !== null && 'statusCode' in err
             ? (err as { statusCode?: number }).statusCode
             : undefined;
-        if (statusCode === 404 || statusCode === 410) {
-          expired.add(sub.endpoint);
+        if (statusCode === 401 || statusCode === 403 || statusCode === 404 || statusCode === 410) {
+          stale.add(sub.endpoint);
+        } else {
+          console.warn('WebPush test failure:', statusCode, err);
         }
       }
     })
   );
 
-  if (expired.size > 0) {
-    await saveSubscriptions(list.filter((s) => !expired.has(s.endpoint)));
+  if (stale.size > 0) {
+    await saveSubscriptions(list.filter((s) => !stale.has(s.endpoint)));
   }
 
   return { found: targets.length, sent };
@@ -544,7 +574,10 @@ async function startServer() {
     res.json({
       ok: true,
       pushReady: Boolean(cachedVapidKeys),
-      vapidSource: cachedVapidSource
+      vapidSource: cachedVapidSource,
+      keypairValid: cachedVapidKeys
+        ? doVapidKeysMatch(cachedVapidKeys.publicKey, cachedVapidKeys.privateKey)
+        : false
     });
   });
 
@@ -588,13 +621,14 @@ async function startServer() {
 
   app.post('/api/push/subscribe', async (req, res) => {
     try {
-      const { subscription, userId, role, phone, relatedId, deviceLabel } = req.body as {
+      const { subscription, userId, role, phone, relatedId, deviceLabel, vapidPublicKey } = req.body as {
         subscription?: WebPushSubscription;
         userId?: string;
         role?: StoredPushSubscription['role'];
         phone?: string;
         relatedId?: string;
         deviceLabel?: string;
+        vapidPublicKey?: string;
       };
 
       if (!subscription?.endpoint || !subscription.keys?.p256dh || !subscription.keys?.auth) {
@@ -613,6 +647,7 @@ async function startServer() {
         return;
       }
 
+      const activeVapid = await ensureVapidKeys().catch(() => null);
       const list = await loadSubscriptions();
       const now = new Date().toISOString();
       const entry: StoredPushSubscription = {
@@ -624,6 +659,7 @@ async function startServer() {
         phone: phone || undefined,
         relatedId: relatedId || undefined,
         deviceLabel: deviceLabel || undefined,
+        vapidPublicKey: vapidPublicKey || activeVapid?.publicKey || undefined,
         updatedAt: now
       };
 

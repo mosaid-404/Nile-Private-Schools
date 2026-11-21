@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Users,
   Search,
@@ -55,19 +55,42 @@ export const StudentManagement: React.FC = () => {
     setSelectedStudentIds([]);
   };
 
+  const activeStudentsCount = useMemo(
+    () => students.reduce((acc, s) => (s.status === 'active' ? acc + 1 : acc), 0),
+    [students]
+  );
+
+  const phoneCountMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of students) {
+      map.set(s.parentPhone, (map.get(s.parentPhone) || 0) + 1);
+    }
+    return map;
+  }, [students]);
+
+  const parentById = useMemo(() => {
+    const map = new Map<string, Parent>();
+    for (const p of parents) map.set(p.id, p);
+    return map;
+  }, [parents]);
+
   // Filter & Search (STU-05)
-  const filteredStudents = students.filter(st => {
-    const matchesSearch =
-      st.name.includes(searchTerm) ||
-      st.code.includes(searchTerm) ||
-      st.parentPhone.includes(searchTerm);
-    const matchesGrade = !selectedGrade || st.grade === selectedGrade;
-    const matchesStatus =
-      selectedStatus === 'all' ||
-      (selectedStatus === 'active' && st.status === 'active') ||
-      (selectedStatus === 'archived' && st.status === 'archived');
-    return matchesSearch && matchesGrade && matchesStatus;
-  });
+  const filteredStudents = useMemo(() => {
+    const q = searchTerm.trim();
+    return students.filter(st => {
+      const matchesSearch =
+        !q ||
+        st.name.includes(q) ||
+        st.code.includes(q) ||
+        st.parentPhone.includes(q);
+      const matchesGrade = !selectedGrade || st.grade === selectedGrade;
+      const matchesStatus =
+        selectedStatus === 'all' ||
+        (selectedStatus === 'active' && st.status === 'active') ||
+        (selectedStatus === 'archived' && st.status === 'archived');
+      return matchesSearch && matchesGrade && matchesStatus;
+    });
+  }, [students, searchTerm, selectedGrade, selectedStatus]);
 
   // Pagination
   const totalPages = Math.ceil(filteredStudents.length / pageSize) || 1;
@@ -110,7 +133,7 @@ export const StudentManagement: React.FC = () => {
   // Export to Excel (STU-09)
   const handleExportExcel = () => {
     const exportData = filteredStudents.map(st => {
-      const prt = parents.find(p => p.id === st.parentId);
+      const prt = parentById.get(st.parentId);
       return {
         'كود الطالب': st.code,
         'اسم الطالب': st.name,
@@ -130,7 +153,7 @@ export const StudentManagement: React.FC = () => {
 
   // Reset Parent Password (PAR-07)
   const handleResetParentPassword = (student: Student) => {
-    const prt = parents.find(p => p.id === student.parentId);
+    const prt = parentById.get(student.parentId);
     if (!prt) return;
 
     const users = storage.getUsers();
@@ -146,7 +169,11 @@ export const StudentManagement: React.FC = () => {
         pUser.id,
         `تم إعادة تعيين كلمة مرور ولي الأمر ${prt.displayName} إلى رقم هاتفه الأصلي (${prt.phone})`
       );
-      alert(`تمت إعادة تعيين كلمة المرور إلى رقم الهاتف الأصلي بنجاح: ${prt.phone}`);
+      setAlertMsg({
+        text: `تمت إعادة تعيين كلمة مرور ولي الأمر (${prt.displayName}) إلى رقم الهاتف الأصلي: ${prt.phone}`,
+        type: 'success'
+      });
+      setTimeout(() => setAlertMsg(null), 4000);
     }
   };
 
@@ -169,7 +196,7 @@ export const StudentManagement: React.FC = () => {
         <div>
           <h2 className="text-lg font-bold text-slate-900">إدارة سجلات الطلاب</h2>
           <p className="text-xs text-slate-500">
-            إجمالي الطلاب المسجلين: <strong className="text-slate-800">{students.length}</strong> (النشطون: {students.filter(s => s.status === 'active').length})
+            إجمالي الطلاب المسجلين: <strong className="text-slate-800">{students.length.toLocaleString()}</strong> (النشطون: {activeStudentsCount.toLocaleString()})
           </p>
         </div>
 
@@ -335,7 +362,7 @@ export const StudentManagement: React.FC = () => {
                         <div className="flex items-center gap-1.5">
                           <span>{st.parentPhone}</span>
                           {(() => {
-                            const siblingsCount = students.filter(other => other.parentPhone === st.parentPhone).length;
+                            const siblingsCount = phoneCountMap.get(st.parentPhone) || 0;
                             return siblingsCount > 1 ? (
                               <span className="text-[10px] font-sans font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800" title="مرتبطون بحساب ولي أمر واحد">
                                 أخوة ({siblingsCount})

@@ -218,3 +218,55 @@ export function normalizeGradeName(input: string, allowedGrades: string[]): stri
 
   return null;
 }
+
+// Normalize Subject names during Teacher Excel/Paste import
+export function normalizeSubjectName(input: string, allowedSubjects: string[]): string | null {
+  if (!input) return null;
+  const clean = input.trim().replace(/\s+/g, ' ');
+  if (!clean) return null;
+
+  const simplifyArabic = (text: string) =>
+    text
+      .trim()
+      .toLowerCase()
+      .replace(/[أإآ]/g, 'ا')
+      .replace(/ى/g, 'ي')
+      .replace(/ة/g, 'ه')
+      .replace(/^ال/, '')
+      .replace(/\s+/g, ' ');
+
+  // 1. Exact match
+  const exact = allowedSubjects.find(s => s.trim() === clean);
+  if (exact) return exact;
+
+  // 2. Normalized exact / partial match against configured subjects
+  const simpleInput = simplifyArabic(clean);
+  for (const subject of allowedSubjects) {
+    const simpleSubj = simplifyArabic(subject);
+    if (simpleSubj === simpleInput || simpleSubj.includes(simpleInput) || simpleInput.includes(simpleSubj)) {
+      return subject;
+    }
+  }
+
+  // 3. Common synonyms mapped back to allowedSubjects if present
+  const synonymGroups: { pattern: RegExp; target: string }[] = [
+    { pattern: /^(عربي|لغه عربيه|اللغه العربيه|arabic)$/i, target: 'لغة عربية' },
+    { pattern: /^(انجليزي|انجلش|لغه انجليزيه|اللغه الانجليزيه|english)$/i, target: 'لغة إنجليزية' },
+    { pattern: /^(رياضه|حساب|رياضيات|الرياضيات|math|mathematics)$/i, target: 'رياضيات' },
+    { pattern: /^(علوم|العلوم|science)$/i, target: 'علوم' },
+    { pattern: /^(دراسات|دراسات اجتماعيه|تاريخ|جغرافيا|social)$/i, target: 'دراسات اجتماعية' },
+    { pattern: /^(فرنساوي|فرنسي|لغه فرنسيه|french)$/i, target: 'لغة فرنسية' },
+    { pattern: /^(دين|تربيه دينيه|دين اسلامي|تربيه اسلاميه|religion)$/i, target: 'تربية دينية' },
+    { pattern: /^(حاسب|حاسب الي|كمبيوتر|تكنولوجيا|ict|computer)$/i, target: 'حاسب آلي' },
+  ];
+
+  for (const { pattern, target } of synonymGroups) {
+    if (pattern.test(simpleInput)) {
+      const matched = allowedSubjects.find(s => simplifyArabic(s) === simplifyArabic(target));
+      return matched || target;
+    }
+  }
+
+  return null;
+}
+
