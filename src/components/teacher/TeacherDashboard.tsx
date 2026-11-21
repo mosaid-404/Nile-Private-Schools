@@ -1,9 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Calendar, Clock, Users, CheckCircle2, AlertCircle, ArrowLeft, BookOpen, Search, UserCheck, Sparkles, MapPin } from 'lucide-react';
-import { User, SessionInstance, Group, ScheduleSlot, Student, TutoringGroup } from '../../types';
+import {
+  User,
+  SessionInstance,
+  Group,
+  ScheduleSlot,
+  Student,
+  TutoringGroup,
+  AttendanceRecord,
+  Teacher
+} from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime, getTodayDateString, ARABIC_DAYS } from '../../utils/arabic';
 import { SessionAttendanceModal } from './SessionAttendanceModal';
+import { VirtualList } from '../common/VirtualList';
 
 interface Props {
   currentUser: User;
@@ -17,6 +27,10 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
   const [tutoringGroups, setTutoringGroups] = useState<TutoringGroup[]>([]);
   const [allStudents, setAllStudents] = useState<Student[]>([]);
   const [scheduleSlots, setScheduleSlots] = useState<ScheduleSlot[]>([]);
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [currentTeacher, setCurrentTeacher] = useState<Teacher | undefined>(() =>
+    storage.getTeachers().find(t => t.userId === currentUser.id || t.id === currentUser.relatedId)
+  );
   const [searchTerm, setSearchTerm] = useState('');
 
   // Quick class attendance state
@@ -45,16 +59,15 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
   const todayStr = getTodayDateString();
 
   const loadData = () => {
-    // Find teacher record
     const teachers = storage.getTeachers();
     const teacher = teachers.find(t => t.userId === currentUser.id || t.id === currentUser.relatedId);
+    setCurrentTeacher(teacher);
     const teacherId = teacher?.id || currentUser.relatedId || '';
 
-    // Groups belonging to this teacher
     const groups = storage.getGroups().filter(g => g.teacherId === teacherId);
+    const myGroupIdSet = new Set(groups.map(g => g.id));
     setTeacherGroups(groups);
 
-    // Tutoring groups assigned to this teacher
     const myTutoring = storage
       .getTutoringGroups()
       .filter(t => t.teacherId === teacherId)
@@ -64,17 +77,15 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
       });
     setTutoringGroups(myTutoring);
 
-    // Today's sessions for these groups
     const sessions = storage.getOrCreateSessionsForDate(todayStr);
-    const mySessions = sessions.filter(s => groups.some(g => g.id === s.groupId));
+    const mySessions = sessions.filter(s => myGroupIdSet.has(s.groupId));
     setTodaySessions(mySessions);
 
-    // Schedule slots
-    const slots = storage.getScheduleSlots().filter(s => groups.some(g => g.id === s.groupId));
+    const slots = storage.getScheduleSlots().filter(s => myGroupIdSet.has(s.groupId));
     setScheduleSlots(slots);
 
-    // Students
     setAllStudents(storage.getStudents());
+    setAttendanceRecords(storage.getAttendanceRecords());
   };
 
   useEffect(() => {
@@ -84,17 +95,84 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
     return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
   }, [currentUser]);
 
-  const getGroupInfo = (groupId: string) => {
-    return teacherGroups.find(g => g.id === groupId);
-  };
+  const { activeStudentById, groupById, slotById, attendanceBySessionId } = useMemo(() => {
+    const sMap = new Map<string, Student>();
+    for (let i = 0; i < allStudents.length; i++) {
+      const s = allStudents[i];
+      if (s.status === 'active') sMap.set(s.id, s);
+    }
 
-  const getSlotInfo = (slotId: string) => {
-    return scheduleSlots.find(s => s.id === slotId);
-  };
+    const gMap = new Map<string, Group>();
+    for (let i = 0; i < teacherGroups.length; i++) gMap.set(teacherGroups[i].id, teacherGroups[i]);
 
-  const currentTeacher = storage.getTeachers().find(
-    t => t.userId === currentUser.id || t.id === currentUser.relatedId
-  );
+    const slMap = new Map<string, ScheduleSlot>();
+    for (let i = 0; i < scheduleSlots.length; i++) slMap.set(scheduleSlots[i].id, scheduleSlots[i]);
+
+    const attMap = new Map<string, AttendanceRecord[]>();
+    for (let i = 0; i < attendanceRecords.length; i++) {
+      const a = attendanceRecords[i];
+      let arr = attMap.get(a.sessionId);
+      if (!arr) {
+        arr = [];
+        attMap.set(a.sessionId, arr);
+      }
+      arr.push(a);
+    }
+
+    return {
+      activeStudentById: sMap,
+      groupById: gMap,
+      slotById: slMap,
+      attendanceBySessionId: attMap
+    };
+  }, [allStudents, teacherGroups, scheduleSlots, attendanceRecords]);
+
+  const { classStudents, classOptions, nextPeriodNumber } = useMemo(() => {
+    const clsStudents: Student[] = [];
+    const clsNums = new Set<number>();
+    for (let i = 0; i < allStudents.length; i++) {
+      const s = allStudents[i];
+      if (s.status !== 'active' || s.grade !== selectedGrade) continue;
+      clsNums.add(s.classNumber);
+      if (s.classNumber === selectedClassNumber) {
+        clsStudents.push(s);
+      }
+    }
+    const sortedClasses = Array.from(clsNums).sort((a, b) => a - b);
+
+    const quickPrefix = `quick_${todayStr}_${selectedGrade}_${selectedClassNumber}`;
+    const existingClassSessionsToday = new Set<string>();
+    for (let i = 0; i < attendanceRecords.length; i++) {
+      const a = attendanceRecords[i];
+      const recDate = a.sessionDate || a.recordedAt.substring(0, 10);
+      if (recDate !== todayStr) continue;
+      if (
+        a.sessionId.startsWith(quickPrefix) ||
+        (a.grade === selectedGrade && a.classNumber === selectedClassNumber)
+      ) {
+        existingClassSessionsToday.add(a.sessionId);
+      }
+    }
+
+    return {
+      classStudents: clsStudents,
+      classOptions: sortedClasses.length > 0 ? sortedClasses : [1, 2, 3, 4],
+      nextPeriodNumber: existingClassSessionsToday.size + 1
+    };
+  }, [allStudents, attendanceRecords, selectedGrade, selectedClassNumber, todayStr]);
+
+  const { presentCount, absentCount } = useMemo(() => {
+    let present = 0;
+    let absent = 0;
+    for (let i = 0; i < classStudents.length; i++) {
+      if (quickRecords[classStudents[i].id] === 'absent') absent++;
+      else present++;
+    }
+    return { presentCount: present, absentCount: absent };
+  }, [classStudents, quickRecords]);
+
+  const getGroupInfo = (groupId: string) => groupById.get(groupId);
+  const getSlotInfo = (slotId: string) => slotById.get(slotId);
 
   return (
     <div className="max-w-7xl mx-auto px-3 sm:px-6 py-6 space-y-6">
@@ -179,35 +257,6 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
 
       {/* Tab 0: Quick Class Attendance (Select Grade + Class -> Mark Present/Absent -> Confirm) */}
       {activeTab === 'quick_class' && (() => {
-        const classStudents = allStudents.filter(
-          s => s.status === 'active' && s.grade === selectedGrade && s.classNumber === selectedClassNumber
-        );
-        const availableClasses = Array.from(
-          new Set(
-            allStudents
-              .filter(s => s.status === 'active' && s.grade === selectedGrade)
-              .map(s => s.classNumber)
-          )
-        ).sort((a, b) => a - b);
-        const classOptions = availableClasses.length > 0 ? availableClasses : [1, 2, 3, 4];
-
-        const existingClassSessionsToday = new Set(
-          storage
-            .getAttendanceRecords()
-            .filter(a => {
-              const recDate = a.sessionDate || a.recordedAt.substring(0, 10);
-              if (recDate !== todayStr) return false;
-              if (a.sessionId.startsWith(`quick_${todayStr}_${selectedGrade}_${selectedClassNumber}`)) {
-                return true;
-              }
-              return a.grade === selectedGrade && a.classNumber === selectedClassNumber;
-            })
-            .map(a => a.sessionId)
-        );
-        const nextPeriodNumber = existingClassSessionsToday.size + 1;
-
-        const presentCount = classStudents.filter(s => (quickRecords[s.id] || 'present') === 'present').length;
-        const absentCount = classStudents.filter(s => quickRecords[s.id] === 'absent').length;
 
         const handleConfirmQuickAttendance = () => {
           if (classStudents.length === 0) return;
@@ -662,10 +711,17 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {teacherGroups.map(grp => {
-              const groupStudents = allStudents.filter(s => grp.studentIds.includes(s.id) && s.status === 'active');
-              const filteredGroupStudents = groupStudents.filter(s =>
-                s.name.includes(searchTerm) || s.code.includes(searchTerm)
-              );
+              const groupStudents: Student[] = [];
+              for (let i = 0; i < grp.studentIds.length; i++) {
+                const st = activeStudentById.get(grp.studentIds[i]);
+                if (st) groupStudents.push(st);
+              }
+              const q = searchTerm.trim().toLowerCase();
+              const filteredGroupStudents = q
+                ? groupStudents.filter(
+                    s => s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
+                  )
+                : groupStudents;
 
               return (
                 <div key={grp.id} className="border border-slate-200 rounded-2xl p-4 bg-slate-50/40">
@@ -679,19 +735,27 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                     </span>
                   </div>
 
-                  <div className="space-y-1.5 max-h-56 overflow-y-auto divide-y divide-slate-100 pr-1">
-                    {filteredGroupStudents.map((st, i) => (
-                      <div key={st.id} className="pt-1.5 flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-2">
-                          <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-600 text-[10px] font-bold flex items-center justify-center">
+                  <VirtualList
+                    items={filteredGroupStudents}
+                    itemHeight={32}
+                    maxHeight={224}
+                    resetKey={searchTerm}
+                    className="divide-y divide-slate-100 pr-1"
+                    emptyState={
+                      <p className="text-xs text-slate-400 text-center py-6">لا يوجد طلاب مطابقون</p>
+                    }
+                    renderItem={(st, i) => (
+                      <div key={st.id} className="h-[32px] flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-600 text-[10px] font-bold flex items-center justify-center shrink-0">
                             {i + 1}
                           </span>
-                          <span className="font-semibold text-slate-800">{st.name}</span>
+                          <span className="font-semibold text-slate-800 truncate">{st.name}</span>
                         </div>
-                        <span className="font-mono text-[11px] text-slate-400">{st.code}</span>
+                        <span className="font-mono text-[11px] text-slate-400 shrink-0">{st.code}</span>
                       </div>
-                    ))}
-                  </div>
+                    )}
+                  />
                 </div>
               );
             })}
@@ -728,14 +792,20 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {tutoringGroups.map(tg => {
-                const enrolledStudents = allStudents.filter(
-                  s => tg.studentIds.includes(s.id) && s.status === 'active'
-                );
+                const enrolledStudents: Student[] = [];
+                for (let i = 0; i < tg.studentIds.length; i++) {
+                  const st = activeStudentById.get(tg.studentIds[i]);
+                  if (st) enrolledStudents.push(st);
+                }
                 const isToday = tg.date === todayStr;
                 const isUpcoming = tg.date > todayStr;
                 const isMarkingAttendance = activeTutAttendanceId === tg.id;
                 const sessionId = `tutoring_${tg.id}_${tg.date}`;
-                const existingAtt = storage.getAttendanceRecords().filter(a => a.sessionId === sessionId);
+                const existingAtt = attendanceBySessionId.get(sessionId) || [];
+                const existingStatusByStudent = new Map<string, 'present' | 'absent'>();
+                for (let i = 0; i < existingAtt.length; i++) {
+                  existingStatusByStudent.set(existingAtt[i].studentId, existingAtt[i].status);
+                }
 
                 return (
                   <div
@@ -831,8 +901,8 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                             } else {
                               const initial: Record<string, 'present' | 'absent'> = {};
                               enrolledStudents.forEach(s => {
-                                const prev = existingAtt.find(a => a.studentId === s.id);
-                                initial[s.id] = prev ? prev.status : 'present';
+                                const prev = existingStatusByStudent.get(s.id);
+                                initial[s.id] = prev || 'present';
                               });
                               setTutAttendanceRecords(initial);
                               setActiveTutAttendanceId(tg.id);
@@ -856,7 +926,7 @@ export const TeacherDashboard: React.FC<Props> = ({ currentUser }) => {
                         {enrolledStudents.map((st, idx) => {
                           const stStatus = isMarkingAttendance
                             ? tutAttendanceRecords[st.id] || 'present'
-                            : existingAtt.find(a => a.studentId === st.id)?.status;
+                            : existingStatusByStudent.get(st.id);
 
                           return (
                             <div key={st.id} className="pt-1.5 flex items-center justify-between gap-2 text-xs">

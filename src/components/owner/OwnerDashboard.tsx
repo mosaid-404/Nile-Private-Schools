@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -20,7 +20,7 @@ import {
   Menu,
   X
 } from 'lucide-react';
-import { User, Student, Teacher, SchoolClass, Group, SessionInstance, AttendanceRecord } from '../../types';
+import { User, Group, Teacher } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, getTodayDateString } from '../../utils/arabic';
 import { StudentManagement } from './StudentManagement';
@@ -31,6 +31,7 @@ import { BroadcastNotificationCenter } from './BroadcastNotificationCenter';
 import { ReportsView } from './ReportsView';
 import { UserManagement } from './UserManagement';
 import { SettingsView } from './SettingsView';
+import { useProgressiveCount } from '../common/VirtualList';
 
 interface Props {
   currentUser: User;
@@ -41,53 +42,108 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
     'dashboard' | 'students' | 'teachers' | 'schedule' | 'attendance' | 'broadcast' | 'reports' | 'users' | 'settings'
   >('dashboard');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [syncTick, setSyncTick] = useState(0);
+
+  useEffect(() => {
+    const onSync = () => setSyncTick(t => t + 1);
+    window.addEventListener('nps_cloud_sync', onSync);
+    window.addEventListener('nps_settings_updated', onSync);
+    return () => {
+      window.removeEventListener('nps_cloud_sync', onSync);
+      window.removeEventListener('nps_settings_updated', onSync);
+    };
+  }, []);
 
   const todayStr = getTodayDateString();
-
-  // Load live data
-  const students = storage.getStudents();
-  const teachers = storage.getTeachers();
-  const parents = storage.getParents();
-  const classes = storage.getClasses();
-  const groups = storage.getGroups();
-  const sessions = storage.getOrCreateSessionsForDate(todayStr);
-  const attendance = storage.getAttendanceRecords();
-  const invoices = storage.getInvoices();
-  const receipts = storage.getReceipts();
   const settings = storage.getSettings();
 
-  // Metrics (OWN-01)
-  const activeStudents = students.filter(s => s.status === 'active');
-  const activeTeachers = teachers.filter(t => t.status === 'active');
+  const metrics = useMemo(() => {
+    const students = storage.getStudents();
+    const teachers = storage.getTeachers();
+    const groups = storage.getGroups();
+    const sessions = storage.getOrCreateSessionsForDate(todayStr);
+    const attendance = storage.getAttendanceRecords();
+    const broadcasts = storage.getBroadcasts();
 
-  const todaySessionIds = sessions.map(s => s.id);
-  const todayAttendance = attendance.filter(a => todaySessionIds.includes(a.sessionId));
-  const todayPresent = todayAttendance.filter(a => a.status === 'present').length;
-  const todayAbsent = todayAttendance.filter(a => a.status === 'absent').length;
-  const todayTotalAttendance = todayPresent + todayAbsent;
-  const todayAttendanceRate = todayTotalAttendance > 0
-    ? Math.round((todayPresent / todayTotalAttendance) * 100)
-    : 100;
+    let activeStudentsCount = 0;
+    for (let i = 0; i < students.length; i++) {
+      if (students[i].status === 'active') activeStudentsCount++;
+    }
 
-  const currentMonthPrefix = todayStr.substring(0, 7);
-  const monthReceipts = receipts.filter(r => r.date.startsWith(currentMonthPrefix) && r.status === 'valid');
-  const unrecordedTodaySessions = sessions.filter(s => s.status !== 'recorded');
-  const broadcasts = storage.getBroadcasts();
+    let activeTeachersCount = 0;
+    const teacherById = new Map<string, Teacher>();
+    for (let i = 0; i < teachers.length; i++) {
+      const t = teachers[i];
+      teacherById.set(t.id, t);
+      if (t.status === 'active') activeTeachersCount++;
+    }
 
-  // Students exceeding absence threshold (OWN-04)
-  const chronicAbsentStudents = students.filter(st => {
-    const abs = attendance.filter(a => a.studentId === st.id && a.status === 'absent').length;
-    return abs >= settings.absenceThreshold;
-  });
+    const groupById = new Map<string, Group>();
+    for (let i = 0; i < groups.length; i++) {
+      groupById.set(groups[i].id, groups[i]);
+    }
+
+    const todaySessionIdSet = new Set<string>();
+    let unrecordedTodayCount = 0;
+    for (let i = 0; i < sessions.length; i++) {
+      todaySessionIdSet.add(sessions[i].id);
+      if (sessions[i].status !== 'recorded') unrecordedTodayCount++;
+    }
+
+    let todayPresent = 0;
+    let todayAbsent = 0;
+    const absentByStudentId = new Map<string, number>();
+    for (let i = 0; i < attendance.length; i++) {
+      const a = attendance[i];
+      if (todaySessionIdSet.has(a.sessionId)) {
+        if (a.status === 'present') todayPresent++;
+        else if (a.status === 'absent') todayAbsent++;
+      }
+      if (a.status === 'absent') {
+        absentByStudentId.set(a.studentId, (absentByStudentId.get(a.studentId) || 0) + 1);
+      }
+    }
+
+    const todayTotalAttendance = todayPresent + todayAbsent;
+    const todayAttendanceRate = todayTotalAttendance > 0
+      ? Math.round((todayPresent / todayTotalAttendance) * 100)
+      : 100;
+
+    let chronicAbsentCount = 0;
+    const threshold = settings.absenceThreshold;
+    for (let i = 0; i < students.length; i++) {
+      if ((absentByStudentId.get(students[i].id) || 0) >= threshold) {
+        chronicAbsentCount++;
+      }
+    }
+
+    return {
+      totalStudentsCount: students.length,
+      activeStudentsCount,
+      activeTeachersCount,
+      sessions,
+      groupById,
+      teacherById,
+      todayPresent,
+      todayAbsent,
+      todayAttendanceRate,
+      unrecordedTodayCount,
+      broadcastsCount: broadcasts.length,
+      chronicAbsentCount
+    };
+  }, [todayStr, settings.absenceThreshold, syncTick, activeSection]);
+
+  const { visibleCount: visibleSessionsCount, hasMore: hasMoreSessions, sentinelRef: sessionsSentinelRef } =
+    useProgressiveCount(metrics.sessions.length, 45, 90, syncTick);
 
   // Nav Items
   const navItems = [
     { id: 'dashboard', label: 'لوحة التحكم', icon: LayoutDashboard },
-    { id: 'students', label: 'الطلاب', icon: Users, badge: activeStudents.length },
-    { id: 'teachers', label: 'المعلمون', icon: GraduationCap, badge: activeTeachers.length },
+    { id: 'students', label: 'الطلاب', icon: Users, badge: metrics.activeStudentsCount },
+    { id: 'teachers', label: 'المعلمون', icon: GraduationCap, badge: metrics.activeTeachersCount },
     { id: 'schedule', label: 'الفصول والجدول', icon: Calendar },
-    { id: 'attendance', label: 'الحضور والغياب', icon: CheckCircle, badge: unrecordedTodaySessions.length > 0 ? unrecordedTodaySessions.length : undefined },
-    { id: 'broadcast', label: 'إرسال الإشعارات والرسائل', icon: Megaphone, badge: broadcasts.length > 0 ? broadcasts.length : undefined },
+    { id: 'attendance', label: 'الحضور والغياب', icon: CheckCircle, badge: metrics.unrecordedTodayCount > 0 ? metrics.unrecordedTodayCount : undefined },
+    { id: 'broadcast', label: 'إرسال الإشعارات والرسائل', icon: Megaphone, badge: metrics.broadcastsCount > 0 ? metrics.broadcastsCount : undefined },
     { id: 'reports', label: 'التقارير والإحصائيات', icon: FileText },
     { id: 'users', label: 'المستخدمون والتدقيق', icon: Shield },
     { id: 'settings', label: 'الإعدادات', icon: Settings }
@@ -216,9 +272,9 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
                 <Users className="w-4 h-4 text-[#1F4E8C]" />
               </div>
               <div className="text-xl sm:text-2xl font-black text-slate-900">
-                {activeStudents.length}
+                {metrics.activeStudentsCount.toLocaleString('ar-EG')}
               </div>
-              <p className="text-[10px] text-slate-400 mt-1">من إجمالي {students.length} طالب</p>
+              <p className="text-[10px] text-slate-400 mt-1">من إجمالي {metrics.totalStudentsCount.toLocaleString('ar-EG')} طالب</p>
             </div>
 
             {/* Teachers */}
@@ -231,7 +287,7 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
                 <GraduationCap className="w-4 h-4 text-emerald-600" />
               </div>
               <div className="text-xl sm:text-2xl font-black text-emerald-700">
-                {activeTeachers.length}
+                {metrics.activeTeachersCount.toLocaleString('ar-EG')}
               </div>
               <p className="text-[10px] text-slate-400 mt-1">هيئة التدريس</p>
             </div>
@@ -246,9 +302,9 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
                 <CheckCircle className="w-4 h-4 text-emerald-600" />
               </div>
               <div className="text-xl sm:text-2xl font-black text-emerald-700">
-                {todayAttendanceRate}%
+                {metrics.todayAttendanceRate}%
               </div>
-              <p className="text-[10px] text-slate-400 mt-1">{todayPresent} حاضر • {todayAbsent} غائب</p>
+              <p className="text-[10px] text-slate-400 mt-1">{metrics.todayPresent} حاضر • {metrics.todayAbsent} غائب</p>
             </div>
 
             {/* Send Quick Broadcast */}
@@ -276,24 +332,24 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
                 <Bell className="w-4 h-4 text-purple-600" />
               </div>
               <div className="text-xl sm:text-2xl font-black text-purple-700">
-                {broadcasts.length}
+                {metrics.broadcastsCount}
               </div>
               <p className="text-[10px] text-slate-400 mt-1">إشعار جماعي مرسل</p>
             </div>
           </div>
 
           {/* Admin Alerts (OWN-04) */}
-          {(chronicAbsentStudents.length > 0 || unrecordedTodaySessions.length > 0) && (
+          {(metrics.chronicAbsentCount > 0 || metrics.unrecordedTodayCount > 0) && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {/* Unrecorded Sessions Alert */}
-              {unrecordedTodaySessions.length > 0 && (
+              {metrics.unrecordedTodayCount > 0 && (
                 <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
                     <div>
                       <h4 className="text-xs font-bold text-amber-900">حصص اليوم بانتظار الرصد</h4>
                       <p className="text-[11px] text-amber-700 mt-0.5">
-                        يوجد {unrecordedTodaySessions.length} حصة لم يقم المعلم برصد حضورها بعد.
+                        يوجد {metrics.unrecordedTodayCount} حصة لم يقم المعلم برصد حضورها بعد.
                       </p>
                     </div>
                   </div>
@@ -307,14 +363,14 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
               )}
 
               {/* Chronic Absence Alert */}
-              {chronicAbsentStudents.length > 0 && (
+              {metrics.chronicAbsentCount > 0 && (
                 <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
                     <div>
                       <h4 className="text-xs font-bold text-rose-900">تنبيه غياب متكرر</h4>
                       <p className="text-[11px] text-rose-700 mt-0.5">
-                        {chronicAbsentStudents.length} طلاب تجاوزوا حد الغياب الشهري ({settings.absenceThreshold} غيابات).
+                        {metrics.chronicAbsentCount} طلاب تجاوزوا حد الغياب الشهري ({settings.absenceThreshold} غيابات).
                       </p>
                     </div>
                   </div>
@@ -345,9 +401,9 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {sessions.map(s => {
-                const grp = groups.find(g => g.id === s.groupId);
-                const tch = teachers.find(t => t.id === grp?.teacherId);
+              {metrics.sessions.slice(0, visibleSessionsCount).map(s => {
+                const grp = metrics.groupById.get(s.groupId);
+                const tch = grp ? metrics.teacherById.get(grp.teacherId) : undefined;
                 const isRecorded = s.status === 'recorded';
 
                 return (
@@ -373,6 +429,11 @@ export const OwnerDashboard: React.FC<Props> = ({ currentUser }) => {
                 );
               })}
             </div>
+            {hasMoreSessions && (
+              <div ref={sessionsSentinelRef} className="py-2 text-center text-xs text-slate-400">
+                جاري تحميل المزيد من الحصص...
+              </div>
+            )}
           </div>
         </div>
       )}

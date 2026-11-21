@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Bell, CheckCheck, UserX, UserCheck, LogOut, CreditCard, Calendar, Clock, AlertCircle, X } from 'lucide-react';
 import { AppNotification, User } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime } from '../../utils/arabic';
 import { MobilePushBanner } from './MobilePushBanner';
+import { useProgressiveCount } from './VirtualList';
 
 interface Props {
   isOpen: boolean;
@@ -23,38 +24,71 @@ export const NotificationCenterModal: React.FC<Props> = ({
   });
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
 
+  useEffect(() => {
+    if (isOpen) {
+      setNotifications(storage.getNotifications());
+    }
+    const onCloudSync = () => setNotifications(storage.getNotifications());
+    window.addEventListener('nps_cloud_sync', onCloudSync);
+    return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
+  }, [isOpen]);
+
+  const userNotifications = useMemo(() => {
+    if (!isOpen || currentUser.role === 'owner') return [];
+    const parentPref =
+      currentUser.role === 'parent'
+        ? storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone)
+        : 'both';
+    const seenKeys = new Set<string>();
+    const result: AppNotification[] = [];
+    for (let i = 0; i < notifications.length; i++) {
+      const n = notifications[i];
+      if (currentUser.role === 'parent' && !storage.shouldDeliverAttendanceNotif(parentPref, n.type)) {
+        continue;
+      }
+      const matchesUser = n.recipientUserId
+        ? n.recipientUserId === currentUser.id
+        : currentUser.role === 'parent'
+        ? n.recipientPhone === currentUser.phone
+        : currentUser.role === 'teacher'
+        ? n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === 'teacher')
+        : false;
+      if (!matchesUser) continue;
+
+      const key = `${n.title}|${n.body}|${(n.createdAt || '').substring(0, 16)}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      result.push(n);
+    }
+    return result;
+  }, [isOpen, notifications, currentUser]);
+
+  const { displayedList, unreadCount } = useMemo(() => {
+    let unread = 0;
+    const unreadItems: AppNotification[] = [];
+    for (let i = 0; i < userNotifications.length; i++) {
+      const n = userNotifications[i];
+      if (!n.isRead) {
+        unread++;
+        unreadItems.push(n);
+      }
+    }
+    return {
+      displayedList: filter === 'unread' ? unreadItems : userNotifications,
+      unreadCount: unread
+    };
+  }, [userNotifications, filter]);
+
+  const { visibleCount, hasMore, sentinelRef } = useProgressiveCount(
+    displayedList.length,
+    60,
+    100,
+    `${isOpen}_${filter}`
+  );
+
   if (!isOpen) return null;
 
-  // Filter for current user's role/phone (Admin does not receive notifications)
-  const parentPref =
-    currentUser.role === 'parent'
-      ? storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone)
-      : 'both';
-  const rawUserNotifications = notifications.filter(n => {
-    if (currentUser.role === 'owner') return false;
-    if (currentUser.role === 'parent' && !storage.shouldDeliverAttendanceNotif(parentPref, n.type)) {
-      return false;
-    }
-    if (n.recipientUserId) return n.recipientUserId === currentUser.id;
-    if (currentUser.role === 'parent') {
-      return n.recipientPhone === currentUser.phone;
-    }
-    if (currentUser.role === 'teacher') {
-      return n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === 'teacher');
-    }
-    return false;
-  });
-
-  const seenKeys = new Set<string>();
-  const userNotifications = rawUserNotifications.filter(n => {
-    const key = `${n.title}|${n.body}|${(n.createdAt || '').substring(0, 16)}`;
-    if (seenKeys.has(key)) return false;
-    seenKeys.add(key);
-    return true;
-  });
-
-  const displayedList = filter === 'unread' ? userNotifications.filter(n => !n.isRead) : userNotifications;
-  const unreadCount = userNotifications.filter(n => !n.isRead).length;
+  const visibleNotifications = displayedList.slice(0, visibleCount);
 
   const handleMarkAllRead = () => {
     storage.markAllNotificationsAsRead(currentUser.role === 'owner' ? undefined : currentUser.phone);
@@ -155,42 +189,49 @@ export const NotificationCenterModal: React.FC<Props> = ({
               <p className="text-sm font-medium">لا توجد إشعارات حالياً</p>
             </div>
           ) : (
-            displayedList.map(item => (
-              <div
-                key={item.id}
-                onClick={() => handleNotificationClick(item)}
-                className={`p-3.5 rounded-xl border transition-all cursor-pointer text-right flex gap-3.5 items-start ${
-                  item.isRead
-                    ? 'bg-white border-slate-200 hover:border-slate-300 opacity-80'
-                    : 'bg-blue-50/70 border-blue-200 hover:border-blue-400 shadow-xs'
-                }`}
-              >
-                <div className="p-2 rounded-xl bg-white shadow-xs shrink-0 mt-0.5">
-                  {getIcon(item.type)}
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <span className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                      {!item.isRead && <span className="w-2 h-2 rounded-full bg-[#1F4E8C]" />}
-                      {item.title}
-                    </span>
-                    <span className="text-[11px] text-slate-400 flex items-center gap-1 shrink-0">
-                      <Clock className="w-3 h-3" />
-                      {formatArabicDate(item.createdAt)} - {formatArabicTime(item.createdAt.substring(11, 16))}
-                    </span>
+            <>
+              {visibleNotifications.map(item => (
+                <div
+                  key={item.id}
+                  onClick={() => handleNotificationClick(item)}
+                  className={`p-3.5 rounded-xl border transition-all cursor-pointer text-right flex gap-3.5 items-start ${
+                    item.isRead
+                      ? 'bg-white border-slate-200 hover:border-slate-300 opacity-80'
+                      : 'bg-blue-50/70 border-blue-200 hover:border-blue-400 shadow-xs'
+                  }`}
+                >
+                  <div className="p-2 rounded-xl bg-white shadow-xs shrink-0 mt-0.5">
+                    {getIcon(item.type)}
                   </div>
 
-                  <p className="text-xs text-slate-700 leading-relaxed">{item.body}</p>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        {!item.isRead && <span className="w-2 h-2 rounded-full bg-[#1F4E8C]" />}
+                        {item.title}
+                      </span>
+                      <span className="text-[11px] text-slate-400 flex items-center gap-1 shrink-0">
+                        <Clock className="w-3 h-3" />
+                        {formatArabicDate(item.createdAt)} - {formatArabicTime(item.createdAt.substring(11, 16))}
+                      </span>
+                    </div>
 
-                  {item.studentId && (
-                    <span className="inline-block mt-2 text-[11px] font-semibold text-[#1F4E8C] hover:underline">
-                      عرض التفاصيل وسجل الحضور ←
-                    </span>
-                  )}
+                    <p className="text-xs text-slate-700 leading-relaxed">{item.body}</p>
+
+                    {item.studentId && (
+                      <span className="inline-block mt-2 text-[11px] font-semibold text-[#1F4E8C] hover:underline">
+                        عرض التفاصيل وسجل الحضور ←
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))
+              ))}
+              {hasMore && (
+                <div ref={sentinelRef} className="py-2 text-center text-[11px] text-slate-400">
+                  جاري عرض باقي الإشعارات...
+                </div>
+              )}
+            </>
           )}
         </div>
 

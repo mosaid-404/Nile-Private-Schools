@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Calendar,
   Clock,
@@ -20,6 +20,7 @@ import {
 import { SchoolClass, Group, ScheduleSlot, Teacher, Student, TutoringGroup } from '../../types';
 import { storage } from '../../services/storage';
 import { ARABIC_DAYS, formatArabicTime, formatArabicDate, getTodayDateString } from '../../utils/arabic';
+import { VirtualList, SearchableVirtualSelect, VirtualSelectOption } from '../common/VirtualList';
 
 export const ClassAndScheduleManagement: React.FC = () => {
   const [subTab, setSubTab] = useState<'schedule' | 'groups' | 'tutoring' | 'classes' | 'subjects'>('schedule');
@@ -56,6 +57,8 @@ export const ClassAndScheduleManagement: React.FC = () => {
   const [groupMode, setGroupMode] = useState<'class' | 'manual'>('class');
   const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
   const [selectedManualStudentIds, setSelectedManualStudentIds] = useState<string[]>([]);
+  const [manualStudentSearch, setManualStudentSearch] = useState('');
+  const [groupError, setGroupError] = useState('');
 
   // New Tutoring Group Modal
   const [showAddTutoringModal, setShowAddTutoringModal] = useState(false);
@@ -108,21 +111,32 @@ export const ClassAndScheduleManagement: React.FC = () => {
   // Add Group Handler (SCH-03)
   const handleSaveGroup = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!groupName || !groupSubject || !groupTeacherId) return;
+    setGroupError('');
+    if (!groupName.trim() || !groupSubject || !groupTeacherId) {
+      setGroupError('يرجى إدخال اسم المجموعة واختيار المادة والمعلم المسؤول.');
+      return;
+    }
 
     let finalStudentIds: string[] = [];
     if (groupMode === 'class') {
-      const classStudents = students.filter(
-        st => st.status === 'active' && classes.some(c => selectedClassIds.includes(c.id) && c.grade === st.grade && c.classNumber === st.classNumber)
-      );
-      finalStudentIds = classStudents.map(s => s.id);
+      const selectedClassIdSet = new Set(selectedClassIds);
+      const selectedClassKeys = new Set<string>();
+      for (let i = 0; i < classes.length; i++) {
+        const c = classes[i];
+        if (selectedClassIdSet.has(c.id)) {
+          selectedClassKeys.add(`${c.grade}__${c.classNumber}`);
+        }
+      }
+      finalStudentIds = students
+        .filter(st => st.status === 'active' && selectedClassKeys.has(`${st.grade}__${st.classNumber}`))
+        .map(s => s.id);
     } else {
       finalStudentIds = selectedManualStudentIds;
     }
 
     const newGroup: Group = {
       id: `grp_${Date.now()}`,
-      name: groupName,
+      name: groupName.trim(),
       subject: groupSubject,
       teacherId: groupTeacherId,
       mode: groupMode,
@@ -133,6 +147,9 @@ export const ClassAndScheduleManagement: React.FC = () => {
     storage.saveGroup(newGroup);
     setShowAddGroupModal(false);
     setGroupName('');
+    setGroupTeacherId('');
+    setGroupError('');
+    setManualStudentSearch('');
     setSelectedClassIds([]);
     setSelectedManualStudentIds([]);
     refreshData();
@@ -306,36 +323,145 @@ export const ClassAndScheduleManagement: React.FC = () => {
     }
   };
 
-  const filteredSlots = selectedTeacherFilter
-    ? slots.filter(s => {
-        const grp = groups.find(g => g.id === s.groupId);
-        return grp && grp.teacherId === selectedTeacherFilter;
-      })
-    : slots;
+  const {
+    teacherById,
+    activeTeachers,
+    groupById,
+    activeStudentsList,
+    activeStudentById,
+    classStudentCountMap,
+    gradeStudentCountMap
+  } = useMemo(() => {
+    const tMap = new Map<string, Teacher>();
+    const actTeachers: Teacher[] = [];
+    for (let i = 0; i < teachers.length; i++) {
+      const t = teachers[i];
+      tMap.set(t.id, t);
+      if (t.status === 'active') actTeachers.push(t);
+    }
 
-  const activeStudentsList = students.filter(s => s.status === 'active');
-  const filteredModalStudents = activeStudentsList.filter(st => {
-    const matchSearch =
-      !tutStudentSearch.trim() ||
-      st.name.includes(tutStudentSearch.trim()) ||
-      st.code.includes(tutStudentSearch.trim());
-    const matchGrade = !tutStudentGradeFilter || st.grade === tutStudentGradeFilter;
-    return matchSearch && matchGrade;
-  });
+    const gMap = new Map<string, Group>();
+    for (let i = 0; i < groups.length; i++) {
+      gMap.set(groups[i].id, groups[i]);
+    }
 
-  const sortedTutoringGroups = [...tutoringGroups].sort((a, b) => {
-    const cmp = b.date.localeCompare(a.date);
-    return cmp !== 0 ? cmp : b.startTime.localeCompare(a.startTime);
-  });
+    const actStudents: Student[] = [];
+    const sMap = new Map<string, Student>();
+    const classCounts = new Map<string, number>();
+    const gradeCounts = new Map<string, number>();
 
-  const availableClassesForSelectedGrade = Array.from(
-    new Set(
-      activeStudentsList
-        .filter(s => s.grade === tutGrade)
-        .map(s => s.classNumber)
-        .concat(classes.filter(c => c.grade === tutGrade).map(c => c.classNumber))
-    )
-  ).sort((a, b) => a - b);
+    for (let i = 0; i < students.length; i++) {
+      const s = students[i];
+      if (s.status !== 'active') continue;
+      actStudents.push(s);
+      sMap.set(s.id, s);
+      const clsKey = `${s.grade}__${s.classNumber}`;
+      classCounts.set(clsKey, (classCounts.get(clsKey) || 0) + 1);
+      gradeCounts.set(s.grade, (gradeCounts.get(s.grade) || 0) + 1);
+    }
+
+    return {
+      teacherById: tMap,
+      activeTeachers: actTeachers,
+      groupById: gMap,
+      activeStudentsList: actStudents,
+      activeStudentById: sMap,
+      classStudentCountMap: classCounts,
+      gradeStudentCountMap: gradeCounts
+    };
+  }, [teachers, groups, students]);
+
+  const allTeacherSelectOptions = useMemo<VirtualSelectOption[]>(
+    () =>
+      teachers.map(t => ({
+        value: t.id,
+        label: `${t.name} (${t.subject})`,
+        searchText: `${t.name} ${t.subject}`
+      })),
+    [teachers]
+  );
+
+  const activeTeacherSelectOptions = useMemo<VirtualSelectOption[]>(
+    () =>
+      activeTeachers.map(t => ({
+        value: t.id,
+        label: `${t.name} (${t.subject})`,
+        searchText: `${t.name} ${t.subject}`
+      })),
+    [activeTeachers]
+  );
+
+  const groupSelectOptions = useMemo<VirtualSelectOption[]>(
+    () =>
+      groups.map(g => ({
+        value: g.id,
+        label: `${g.name} (${g.subject})`,
+        searchText: `${g.name} ${g.subject}`
+      })),
+    [groups]
+  );
+
+  const slotsByDay = useMemo(() => {
+    const days: ScheduleSlot[][] = [[], [], [], [], [], [], []];
+    for (let i = 0; i < slots.length; i++) {
+      const sl = slots[i];
+      if (selectedTeacherFilter) {
+        const grp = groupById.get(sl.groupId);
+        if (!grp || grp.teacherId !== selectedTeacherFilter) continue;
+      }
+      if (sl.dayOfWeek >= 0 && sl.dayOfWeek < 7) {
+        days[sl.dayOfWeek].push(sl);
+      }
+    }
+    for (let d = 0; d < 7; d++) {
+      days[d].sort((a, b) => a.startTime.localeCompare(b.startTime));
+    }
+    return days;
+  }, [slots, selectedTeacherFilter, groupById]);
+
+  const filteredModalStudents = useMemo(() => {
+    if (!showAddTutoringModal) return [];
+    const q = tutStudentSearch.trim().toLowerCase();
+    return activeStudentsList.filter(st => {
+      const matchSearch =
+        !q || st.name.toLowerCase().includes(q) || st.code.toLowerCase().includes(q);
+      const matchGrade = !tutStudentGradeFilter || st.grade === tutStudentGradeFilter;
+      return matchSearch && matchGrade;
+    });
+  }, [showAddTutoringModal, activeStudentsList, tutStudentSearch, tutStudentGradeFilter]);
+
+  const filteredManualStudents = useMemo(() => {
+    if (!showAddGroupModal || groupMode !== 'manual') return [];
+    const q = manualStudentSearch.trim().toLowerCase();
+    if (!q) return activeStudentsList;
+    return activeStudentsList.filter(
+      st => st.name.toLowerCase().includes(q) || st.code.toLowerCase().includes(q)
+    );
+  }, [showAddGroupModal, groupMode, activeStudentsList, manualStudentSearch]);
+
+  const tutStudentIdSet = useMemo(() => new Set(tutStudentIds), [tutStudentIds]);
+  const manualSelectedIdSet = useMemo(() => new Set(selectedManualStudentIds), [selectedManualStudentIds]);
+
+  const sortedTutoringGroups = useMemo(
+    () =>
+      [...tutoringGroups].sort((a, b) => {
+        const cmp = b.date.localeCompare(a.date);
+        return cmp !== 0 ? cmp : b.startTime.localeCompare(a.startTime);
+      }),
+    [tutoringGroups]
+  );
+
+  const availableClassesForSelectedGrade = useMemo(() => {
+    if (!showAddTutoringModal || tutTargetType !== 'class') return [];
+    const nums = new Set<number>();
+    for (let i = 0; i < activeStudentsList.length; i++) {
+      if (activeStudentsList[i].grade === tutGrade) nums.add(activeStudentsList[i].classNumber);
+    }
+    for (let i = 0; i < classes.length; i++) {
+      if (classes[i].grade === tutGrade) nums.add(classes[i].classNumber);
+    }
+    return Array.from(nums).sort((a, b) => a - b);
+  }, [showAddTutoringModal, tutTargetType, activeStudentsList, classes, tutGrade]);
 
   return (
     <div className="space-y-5">
@@ -436,8 +562,12 @@ export const ClassAndScheduleManagement: React.FC = () => {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {sortedTutoringGroups.map(tg => {
-                const tch = teachers.find(t => t.id === tg.teacherId);
-                const enrolledStudents = activeStudentsList.filter(s => tg.studentIds.includes(s.id));
+                const tch = teacherById.get(tg.teacherId);
+                const enrolledStudents: Student[] = [];
+                for (let i = 0; i < tg.studentIds.length; i++) {
+                  const st = activeStudentById.get(tg.studentIds[i]);
+                  if (st) enrolledStudents.push(st);
+                }
                 const isExpanded = expandedTutoringId === tg.id;
                 const isDeleting = confirmDeleteTutId === tg.id;
 
@@ -542,21 +672,29 @@ export const ClassAndScheduleManagement: React.FC = () => {
                         </button>
 
                         {isExpanded && (
-                          <div className="mt-2 max-h-40 overflow-y-auto bg-slate-50 rounded-2xl border border-slate-200 p-2.5 space-y-1.5">
-                            {enrolledStudents.map((st, idx) => (
+                          <VirtualList
+                            items={enrolledStudents}
+                            itemHeight={28}
+                            maxHeight={160}
+                            resetKey={tg.id}
+                            className="mt-2 bg-slate-50 rounded-2xl border border-slate-200 p-2.5"
+                            emptyState={
+                              <p className="text-xs text-slate-400 text-center py-2">لا يوجد طلاب</p>
+                            }
+                            renderItem={(st, idx) => (
                               <div
                                 key={st.id}
-                                className="flex items-center justify-between text-[11px] py-1 border-b border-slate-100 last:border-0"
+                                className="h-[28px] flex items-center justify-between text-[11px] border-b border-slate-100 last:border-0"
                               >
-                                <span className="font-semibold text-slate-800">
+                                <span className="font-semibold text-slate-800 truncate">
                                   {idx + 1}. {st.name}
                                 </span>
-                                <span className="text-slate-500">
+                                <span className="text-slate-500 shrink-0">
                                   {st.grade} ({st.classNumber}) • <span className="font-mono">{st.code}</span>
                                 </span>
                               </div>
-                            ))}
-                          </div>
+                            )}
+                          />
                         )}
                       </div>
                     </div>
@@ -612,26 +750,23 @@ export const ClassAndScheduleManagement: React.FC = () => {
       {subTab === 'schedule' && (
         <div className="space-y-4">
           {/* Filter by Teacher */}
-          <div className="flex items-center justify-between bg-white p-3.5 rounded-2xl border border-slate-200">
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-white p-3.5 rounded-2xl border border-slate-200">
             <span className="text-xs font-bold text-slate-700">تصفية الجدول بحسب المعلم:</span>
-            <select
-              value={selectedTeacherFilter}
-              onChange={(e) => setSelectedTeacherFilter(e.target.value)}
-              className="px-3 py-1.5 rounded-xl border border-slate-300 text-xs bg-white outline-hidden"
-            >
-              <option value="">كافة المعلمين</option>
-              {teachers.map(t => (
-                <option key={t.id} value={t.id}>{t.name} ({t.subject})</option>
-              ))}
-            </select>
+            <div className="w-64">
+              <SearchableVirtualSelect
+                value={selectedTeacherFilter}
+                onChange={setSelectedTeacherFilter}
+                options={allTeacherSelectOptions}
+                emptyOptionLabel="كافة المعلمين"
+                searchPlaceholder="ابحث باسم المعلم أو المادة..."
+              />
+            </div>
           </div>
 
           {/* Grid View */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {ARABIC_DAYS.map((dayName, dayIdx) => {
-              const daySlots = filteredSlots.filter(s => s.dayOfWeek === dayIdx);
-              // Sort by start time
-              daySlots.sort((a, b) => a.startTime.localeCompare(b.startTime));
+              const daySlots = slotsByDay[dayIdx];
 
               return (
                 <div key={dayIdx} className="bg-white rounded-3xl p-4 border border-slate-200 shadow-2xs space-y-3">
@@ -647,8 +782,8 @@ export const ClassAndScheduleManagement: React.FC = () => {
                       <p className="text-xs text-slate-400 text-center py-6">لا توجد مواعيد</p>
                     ) : (
                       daySlots.map(slot => {
-                        const grp = groups.find(g => g.id === slot.groupId);
-                        const tch = teachers.find(t => t.id === grp?.teacherId);
+                        const grp = groupById.get(slot.groupId);
+                        const tch = grp ? teacherById.get(grp.teacherId) : undefined;
 
                         return (
                           <div
@@ -686,8 +821,11 @@ export const ClassAndScheduleManagement: React.FC = () => {
       {subTab === 'groups' && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {groups.map(grp => {
-            const tch = teachers.find(t => t.id === grp.teacherId);
-            const groupStudents = students.filter(s => grp.studentIds.includes(s.id) && s.status === 'active');
+            const tch = teacherById.get(grp.teacherId);
+            let activeCount = 0;
+            for (let i = 0; i < grp.studentIds.length; i++) {
+              if (activeStudentById.has(grp.studentIds[i])) activeCount++;
+            }
 
             return (
               <div key={grp.id} className="bg-white rounded-3xl p-5 border border-slate-200 shadow-2xs space-y-3">
@@ -699,7 +837,7 @@ export const ClassAndScheduleManagement: React.FC = () => {
                     <h3 className="font-bold text-base text-slate-900 mt-1">{grp.name}</h3>
                   </div>
                   <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-700">
-                    {groupStudents.length} طالب
+                    {activeCount} طالب
                   </span>
                 </div>
 
@@ -762,9 +900,7 @@ export const ClassAndScheduleManagement: React.FC = () => {
           {/* Classes Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {classes.map(cls => {
-              const classStudents = students.filter(
-                s => s.grade === cls.grade && s.classNumber === cls.classNumber && s.status === 'active'
-              );
+              const classStudentCount = classStudentCountMap.get(`${cls.grade}__${cls.classNumber}`) || 0;
 
               return (
                 <div key={cls.id} className="bg-white rounded-3xl p-4 border border-slate-200 text-center space-y-2">
@@ -773,7 +909,7 @@ export const ClassAndScheduleManagement: React.FC = () => {
                   </div>
                   <h4 className="font-bold text-xs text-slate-900">{cls.grade}</h4>
                   <span className="text-[11px] text-slate-500 font-semibold block">
-                    {classStudents.length} طالب مسجل
+                    {classStudentCount} طالب مسجل
                   </span>
                 </div>
               );
@@ -873,17 +1009,13 @@ export const ClassAndScheduleManagement: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">المعلم المسؤول</label>
-                <select
+                <SearchableVirtualSelect
                   value={tutTeacherId}
-                  onChange={(e) => setTutTeacherId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 outline-hidden bg-white"
-                  required
-                >
-                  <option value="">-- اختر المعلم --</option>
-                  {teachers.filter(t => t.status === 'active').map(t => (
-                    <option key={t.id} value={t.id}>{t.name} ({t.subject})</option>
-                  ))}
-                </select>
+                  onChange={setTutTeacherId}
+                  options={activeTeacherSelectOptions}
+                  emptyOptionLabel="-- اختر المعلم --"
+                  searchPlaceholder="ابحث باسم المعلم أو المادة..."
+                />
               </div>
             </div>
 
@@ -963,36 +1095,40 @@ export const ClassAndScheduleManagement: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="max-h-44 overflow-y-auto space-y-1">
-                    {filteredModalStudents.length === 0 ? (
+                  <VirtualList
+                    items={filteredModalStudents}
+                    itemHeight={42}
+                    maxHeight={176}
+                    resetKey={`${tutStudentSearch}_${tutStudentGradeFilter}`}
+                    emptyState={
                       <p className="text-xs text-slate-400 text-center py-4">لا يوجد طلاب مطابقين للبحث</p>
-                    ) : (
-                      filteredModalStudents.map(st => {
-                        const checked = tutStudentIds.includes(st.id);
-                        return (
+                    }
+                    renderItem={(st) => {
+                      const checked = tutStudentIdSet.has(st.id);
+                      return (
+                        <div key={st.id} className="pb-1">
                           <button
-                            key={st.id}
                             type="button"
                             onClick={() =>
                               setTutStudentIds(prev =>
                                 prev.includes(st.id) ? prev.filter(x => x !== st.id) : [...prev, st.id]
                               )
                             }
-                            className={`w-full p-2 rounded-xl border text-xs text-right flex items-center justify-between transition ${
+                            className={`w-full h-[38px] px-2.5 rounded-xl border text-xs text-right flex items-center justify-between transition ${
                               checked
                                 ? 'bg-amber-50 border-amber-400 font-bold text-slate-900'
                                 : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
                             }`}
                           >
-                            <span>{st.name}</span>
-                            <span className="text-[11px] text-slate-500">
+                            <span className="truncate">{st.name}</span>
+                            <span className="text-[11px] text-slate-500 shrink-0 mr-2">
                               {st.grade} ({st.classNumber}) • <span className="font-mono">{st.code}</span>
                             </span>
                           </button>
-                        );
-                      })
-                    )}
-                  </div>
+                        </div>
+                      );
+                    }}
+                  />
                 </div>
               )}
 
@@ -1026,7 +1162,7 @@ export const ClassAndScheduleManagement: React.FC = () => {
                   <div className="col-span-2 text-[11px] text-slate-600 font-semibold">
                     عدد الطلاب النشطين في هذا الفصل:{' '}
                     <strong className="text-[#1F4E8C]">
-                      {activeStudentsList.filter(s => s.grade === tutGrade && s.classNumber === tutClassNumber).length} طالب
+                      {classStudentCountMap.get(`${tutGrade}__${tutClassNumber}`) || 0} طالب
                     </strong>
                   </div>
                 </div>
@@ -1048,7 +1184,7 @@ export const ClassAndScheduleManagement: React.FC = () => {
                   <div className="text-[11px] text-slate-600 font-semibold">
                     عدد الطلاب النشطين في هذا الصف:{' '}
                     <strong className="text-[#1F4E8C]">
-                      {activeStudentsList.filter(s => s.grade === tutGrade).length} طالب
+                      {gradeStudentCountMap.get(tutGrade) || 0} طالب
                     </strong>
                   </div>
                 </div>
@@ -1150,6 +1286,13 @@ export const ClassAndScheduleManagement: React.FC = () => {
               إنشاء مجموعة دراسية جديدة
             </h3>
 
+            {groupError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{groupError}</span>
+              </div>
+            )}
+
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">اسم المجموعة</label>
               <input
@@ -1162,7 +1305,7 @@ export const ClassAndScheduleManagement: React.FC = () => {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">المادة</label>
                 <select
@@ -1180,17 +1323,13 @@ export const ClassAndScheduleManagement: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">المعلم المسؤول</label>
-                <select
+                <SearchableVirtualSelect
                   value={groupTeacherId}
-                  onChange={(e) => setGroupTeacherId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 outline-hidden bg-white"
-                  required
-                >
-                  <option value="">-- اختر المعلم --</option>
-                  {teachers.map(t => (
-                    <option key={t.id} value={t.id}>{t.name} ({t.subject})</option>
-                  ))}
-                </select>
+                  onChange={setGroupTeacherId}
+                  options={allTeacherSelectOptions}
+                  emptyOptionLabel="-- اختر المعلم --"
+                  searchPlaceholder="ابحث باسم المعلم أو المادة..."
+                />
               </div>
             </div>
 
@@ -1250,30 +1389,61 @@ export const ClassAndScheduleManagement: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">اختر الطلاب يدوياً:</label>
-                <div className="space-y-1 max-h-40 overflow-y-auto">
-                  {students.map(st => {
-                    const isSelected = selectedManualStudentIds.includes(st.id);
-                    return (
-                      <button
-                        key={st.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedManualStudentIds(prev =>
-                            prev.includes(st.id) ? prev.filter(x => x !== st.id) : [...prev, st.id]
-                          );
-                        }}
-                        className={`w-full p-2 rounded-xl border text-xs text-right flex justify-between transition ${
-                          isSelected ? 'bg-blue-100 border-[#1F4E8C] font-bold' : 'bg-slate-50 border-slate-200'
-                        }`}
-                      >
-                        <span>{st.name}</span>
-                        <span className="font-mono text-slate-400">{st.code}</span>
-                      </button>
-                    );
-                  })}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-slate-700">
+                    اختر الطلاب يدوياً (المحدد: {selectedManualStudentIds.length}):
+                  </label>
+                  {selectedManualStudentIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedManualStudentIds([])}
+                      className="text-[11px] font-bold text-rose-600 hover:underline"
+                    >
+                      مسح التحديد
+                    </button>
+                  )}
                 </div>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={manualStudentSearch}
+                    onChange={(e) => setManualStudentSearch(e.target.value)}
+                    placeholder="ابحث باسم الطالب أو الكود..."
+                    className="w-full px-3 py-1.5 pr-8 text-xs rounded-xl border border-slate-300 bg-white outline-hidden"
+                  />
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-2" />
+                </div>
+                <VirtualList
+                  items={filteredManualStudents}
+                  itemHeight={40}
+                  maxHeight={160}
+                  resetKey={manualStudentSearch}
+                  emptyState={
+                    <p className="text-xs text-slate-400 text-center py-4">لا يوجد طلاب مطابقين للبحث</p>
+                  }
+                  renderItem={(st) => {
+                    const isSelected = manualSelectedIdSet.has(st.id);
+                    return (
+                      <div key={st.id} className="pb-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedManualStudentIds(prev =>
+                              prev.includes(st.id) ? prev.filter(x => x !== st.id) : [...prev, st.id]
+                            );
+                          }}
+                          className={`w-full h-[36px] px-2.5 rounded-xl border text-xs text-right flex items-center justify-between transition ${
+                            isSelected ? 'bg-blue-100 border-[#1F4E8C] font-bold' : 'bg-slate-50 border-slate-200'
+                          }`}
+                        >
+                          <span className="truncate">{st.name}</span>
+                          <span className="font-mono text-slate-400 shrink-0 mr-2">{st.code}</span>
+                        </button>
+                      </div>
+                    );
+                  }}
+                />
               </div>
             )}
 
@@ -1313,17 +1483,13 @@ export const ClassAndScheduleManagement: React.FC = () => {
 
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">المجموعة الدراسية</label>
-              <select
+              <SearchableVirtualSelect
                 value={slotGroupId}
-                onChange={(e) => setSlotGroupId(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 outline-hidden bg-white"
-                required
-              >
-                <option value="">-- اختر المجموعة --</option>
-                {groups.map(g => (
-                  <option key={g.id} value={g.id}>{g.name} ({g.subject})</option>
-                ))}
-              </select>
+                onChange={setSlotGroupId}
+                options={groupSelectOptions}
+                emptyOptionLabel="-- اختر المجموعة --"
+                searchPlaceholder="ابحث باسم المجموعة أو المادة..."
+              />
             </div>
 
             <div>

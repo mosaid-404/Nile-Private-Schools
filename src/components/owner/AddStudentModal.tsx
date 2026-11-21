@@ -14,6 +14,7 @@ import {
 import * as XLSX from 'xlsx';
 import { storage } from '../../services/storage';
 import { cleanEgyptianPhone, toLatinDigits, normalizeGradeName } from '../../utils/arabic';
+import { useProgressiveCount } from '../common/VirtualList';
 
 interface Props {
   isOpen: boolean;
@@ -33,8 +34,6 @@ interface ParsedRow {
   rawGrade: string;
 }
 
-const PREVIEW_PAGE_SIZE = 50;
-
 export const AddStudentModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) => {
   const [activeTab, setActiveTab] = useState<'manual' | 'upload' | 'paste'>('manual');
 
@@ -52,7 +51,6 @@ export const AddStudentModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [bulkNotice, setBulkNotice] = useState('');
   const [previewFilter, setPreviewFilter] = useState<'all' | 'valid' | 'issues'>('all');
-  const [previewPage, setPreviewPage] = useState(1);
 
   // Async Progress state for 10,000+ rows
   const [busyProgress, setBusyProgress] = useState<{
@@ -92,14 +90,20 @@ export const AddStudentModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
     return { validCount: valid, errorCount: err, existsCount: exists, filteredIndices: indices };
   }, [parsedRows, previewFilter]);
 
+  const {
+    visibleCount: visiblePreviewCount,
+    hasMore: hasMorePreview,
+    sentinelRef: previewSentinelRef
+  } = useProgressiveCount(
+    filteredIndices.length,
+    100,
+    150,
+    `${isOpen}_${previewFilter}_${parsedRows.length}`
+  );
+
   if (!isOpen) return null;
 
-  const totalPreviewPages = Math.max(1, Math.ceil(filteredIndices.length / PREVIEW_PAGE_SIZE));
-  const safePage = Math.min(previewPage, totalPreviewPages);
-  const visibleRowIndices = filteredIndices.slice(
-    (safePage - 1) * PREVIEW_PAGE_SIZE,
-    safePage * PREVIEW_PAGE_SIZE
-  );
+  const visibleRowIndices = filteredIndices.slice(0, visiblePreviewCount);
 
   // Manual Add Handler (STU-01)
   const handleManualAdd = (addAnother: boolean = false) => {
@@ -279,7 +283,6 @@ export const AddStudentModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
 
     setParsedRows(rows);
     setPreviewFilter('all');
-    setPreviewPage(1);
   };
 
   // Upload File Handler using ArrayBuffer for fast large-file reading
@@ -733,17 +736,14 @@ export const AddStudentModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                     جدول معاينة وتحقق الصفوف ({parsedRows.length.toLocaleString()} صف)
                   </h4>
                   <p className="text-xs text-slate-500">
-                    يُعرض {PREVIEW_PAGE_SIZE} صف في كل صفحة لضمان سرعة التصفح مهما كبر عدد الصفوف
+                    يتم عرض كافة الصفوف ({filteredIndices.length.toLocaleString()}) بسلاسة مع التمرير التلقائي للمعاينة والتعديل
                   </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 text-xs">
                   <button
                     type="button"
-                    onClick={() => {
-                      setPreviewFilter('all');
-                      setPreviewPage(1);
-                    }}
+                    onClick={() => setPreviewFilter('all')}
                     className={`px-2.5 py-1 rounded-full font-bold transition ${
                       previewFilter === 'all'
                         ? 'bg-[#1F4E8C] text-white'
@@ -754,10 +754,7 @@ export const AddStudentModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setPreviewFilter('valid');
-                      setPreviewPage(1);
-                    }}
+                    onClick={() => setPreviewFilter('valid')}
                     className={`px-2.5 py-1 rounded-full font-bold transition ${
                       previewFilter === 'valid'
                         ? 'bg-emerald-600 text-white'
@@ -769,10 +766,7 @@ export const AddStudentModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                   {(errorCount > 0 || existsCount > 0) && (
                     <button
                       type="button"
-                      onClick={() => {
-                        setPreviewFilter('issues');
-                        setPreviewPage(1);
-                      }}
+                      onClick={() => setPreviewFilter('issues')}
                       className={`px-2.5 py-1 rounded-full font-bold transition ${
                         previewFilter === 'issues'
                           ? 'bg-rose-600 text-white'
@@ -908,34 +902,8 @@ export const AddStudentModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                     })}
                   </tbody>
                 </table>
+                {hasMorePreview && <div ref={previewSentinelRef} className="h-4" />}
               </div>
-
-              {/* Preview Pagination Controls */}
-              {totalPreviewPages > 1 && (
-                <div className="flex items-center justify-between text-xs bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
-                  <span className="text-slate-600">
-                    صفحة <strong>{safePage}</strong> من <strong>{totalPreviewPages}</strong> (عرض {visibleRowIndices.length} من {filteredIndices.length.toLocaleString()})
-                  </span>
-                  <div className="flex gap-1.5">
-                    <button
-                      type="button"
-                      disabled={safePage <= 1}
-                      onClick={() => setPreviewPage(p => Math.max(1, p - 1))}
-                      className="px-3 py-1 rounded-lg bg-white border border-slate-200 disabled:opacity-40 font-bold"
-                    >
-                      السابق
-                    </button>
-                    <button
-                      type="button"
-                      disabled={safePage >= totalPreviewPages}
-                      onClick={() => setPreviewPage(p => Math.min(totalPreviewPages, p + 1))}
-                      className="px-3 py-1 rounded-lg bg-white border border-slate-200 disabled:opacity-40 font-bold"
-                    >
-                      التالي
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {/* Action Buttons */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2">

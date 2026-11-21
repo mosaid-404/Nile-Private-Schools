@@ -17,6 +17,7 @@ import * as XLSX from 'xlsx';
 import { Teacher } from '../../types';
 import { storage } from '../../services/storage';
 import { cleanEgyptianPhone, toLatinDigits, normalizeSubjectName } from '../../utils/arabic';
+import { useProgressiveCount } from '../common/VirtualList';
 
 export interface CreatedTeacherCred {
   teacher: Teacher;
@@ -39,8 +40,6 @@ interface ParsedTeacherRow {
   message: string;
 }
 
-const PREVIEW_PAGE_SIZE = 50;
-
 export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) => {
   const [activeTab, setActiveTab] = useState<'manual' | 'upload' | 'paste'>('manual');
 
@@ -57,7 +56,6 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
   const [parsedRows, setParsedRows] = useState<ParsedTeacherRow[]>([]);
   const [bulkNotice, setBulkNotice] = useState('');
   const [previewFilter, setPreviewFilter] = useState<'all' | 'valid' | 'issues'>('all');
-  const [previewPage, setPreviewPage] = useState(1);
 
   // Async Progress state for 10,000+ rows
   const [busyProgress, setBusyProgress] = useState<{
@@ -68,7 +66,6 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
 
   // Created Credentials Summary
   const [createdCreds, setCreatedCreds] = useState<CreatedTeacherCred[]>([]);
-  const [credsPage, setCredsPage] = useState(1);
   const [importSummary, setImportSummary] = useState<{
     total: number;
     added: number;
@@ -100,21 +97,27 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
     return { validCount: valid, errorCount: err, existsCount: exists, filteredIndices: indices };
   }, [parsedRows, previewFilter]);
 
+  const {
+    visibleCount: visiblePreviewCount,
+    hasMore: hasMorePreview,
+    sentinelRef: previewSentinelRef
+  } = useProgressiveCount(
+    filteredIndices.length,
+    100,
+    150,
+    `${isOpen}_${previewFilter}_${parsedRows.length}`
+  );
+
+  const {
+    visibleCount: visibleCredsCount,
+    hasMore: hasMoreCreds,
+    sentinelRef: credsSentinelRef
+  } = useProgressiveCount(createdCreds.length, 100, 150, `${isOpen}_${createdCreds.length}`);
+
   if (!isOpen) return null;
 
-  const totalPreviewPages = Math.max(1, Math.ceil(filteredIndices.length / PREVIEW_PAGE_SIZE));
-  const safePreviewPage = Math.min(previewPage, totalPreviewPages);
-  const visibleRowIndices = filteredIndices.slice(
-    (safePreviewPage - 1) * PREVIEW_PAGE_SIZE,
-    safePreviewPage * PREVIEW_PAGE_SIZE
-  );
-
-  const totalCredsPages = Math.max(1, Math.ceil(createdCreds.length / PREVIEW_PAGE_SIZE));
-  const safeCredsPage = Math.min(credsPage, totalCredsPages);
-  const visibleCreds = createdCreds.slice(
-    (safeCredsPage - 1) * PREVIEW_PAGE_SIZE,
-    safeCredsPage * PREVIEW_PAGE_SIZE
-  );
+  const visibleRowIndices = filteredIndices.slice(0, visiblePreviewCount);
+  const visibleCreds = createdCreds.slice(0, visibleCredsCount);
 
   // Tab 1: Manual single / consecutive add
   const handleManualAdd = (addAnother: boolean) => {
@@ -168,7 +171,6 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
     };
 
     setCreatedCreds(prev => [...prev, newCred]);
-    setCredsPage(1);
     onSuccess();
 
     if (addAnother) {
@@ -351,7 +353,6 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
 
     setParsedRows(rows);
     setPreviewFilter('all');
-    setPreviewPage(1);
   };
 
   // Tab 2: Upload Excel / CSV using ArrayBuffer
@@ -485,7 +486,6 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
 
     setBusyProgress(null);
     setCreatedCreds(res.added);
-    setCredsPage(1);
     setImportSummary({
       total: parsedRows.length,
       added: res.added.length,
@@ -861,17 +861,14 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                     جدول معاينة وتحقق المعلمين ({parsedRows.length.toLocaleString()} صف)
                   </h4>
                   <p className="text-xs text-slate-500">
-                    يُعرض {PREVIEW_PAGE_SIZE} صف في كل صفحة لضمان سلاسة التعديل والاعتماد
+                    يتم عرض كافة الصفوف ({filteredIndices.length.toLocaleString()}) بسلاسة مع التمرير التلقائي للتعديل والاعتماد
                   </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 text-xs">
                   <button
                     type="button"
-                    onClick={() => {
-                      setPreviewFilter('all');
-                      setPreviewPage(1);
-                    }}
+                    onClick={() => setPreviewFilter('all')}
                     className={`px-2.5 py-1 rounded-full font-bold transition ${
                       previewFilter === 'all'
                         ? 'bg-[#1F4E8C] text-white'
@@ -882,10 +879,7 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setPreviewFilter('valid');
-                      setPreviewPage(1);
-                    }}
+                    onClick={() => setPreviewFilter('valid')}
                     className={`px-2.5 py-1 rounded-full font-bold transition ${
                       previewFilter === 'valid'
                         ? 'bg-emerald-600 text-white'
@@ -897,10 +891,7 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                   {(errorCount > 0 || existsCount > 0) && (
                     <button
                       type="button"
-                      onClick={() => {
-                        setPreviewFilter('issues');
-                        setPreviewPage(1);
-                      }}
+                      onClick={() => setPreviewFilter('issues')}
                       className={`px-2.5 py-1 rounded-full font-bold transition ${
                         previewFilter === 'issues'
                           ? 'bg-rose-600 text-white'
@@ -1022,34 +1013,8 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                     })}
                   </tbody>
                 </table>
+                {hasMorePreview && <div ref={previewSentinelRef} className="h-4" />}
               </div>
-
-              {/* Preview Pagination Controls */}
-              {totalPreviewPages > 1 && (
-                <div className="flex items-center justify-between text-xs bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
-                  <span className="text-slate-600">
-                    صفحة <strong>{safePreviewPage}</strong> من <strong>{totalPreviewPages}</strong> (عرض {visibleRowIndices.length} من {filteredIndices.length.toLocaleString()})
-                  </span>
-                  <div className="flex gap-1.5">
-                    <button
-                      type="button"
-                      disabled={safePreviewPage <= 1}
-                      onClick={() => setPreviewPage(p => Math.max(1, p - 1))}
-                      className="px-3 py-1 rounded-lg bg-white border border-slate-200 disabled:opacity-40 font-bold"
-                    >
-                      السابق
-                    </button>
-                    <button
-                      type="button"
-                      disabled={safePreviewPage >= totalPreviewPages}
-                      onClick={() => setPreviewPage(p => Math.min(totalPreviewPages, p + 1))}
-                      className="px-3 py-1 rounded-lg bg-white border border-slate-200 disabled:opacity-40 font-bold"
-                    >
-                      التالي
-                    </button>
-                  </div>
-                </div>
-              )}
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
                 <div className="flex gap-2">
@@ -1144,7 +1109,7 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                         {visibleCreds.map((c, i) => (
                           <tr key={i}>
                             <td className="p-2.5 text-slate-400 font-mono">
-                              {(safeCredsPage - 1) * PREVIEW_PAGE_SIZE + i + 1}
+                              {i + 1}
                             </td>
                             <td className="p-2.5 font-bold text-slate-900">{c.teacher.name}</td>
                             <td className="p-2.5 text-slate-600">{c.teacher.subject}</td>
@@ -1154,33 +1119,8 @@ export const AddTeacherModal: React.FC<Props> = ({ isOpen, onClose, onSuccess })
                         ))}
                       </tbody>
                     </table>
+                    {hasMoreCreds && <div ref={credsSentinelRef} className="h-4" />}
                   </div>
-
-                  {totalCredsPages > 1 && (
-                    <div className="flex items-center justify-between text-xs bg-white px-3 py-2 rounded-xl border border-emerald-200">
-                      <span className="text-slate-600">
-                        صفحة <strong>{safeCredsPage}</strong> من <strong>{totalCredsPages}</strong> (إجمالي {createdCreds.length.toLocaleString()} معلم)
-                      </span>
-                      <div className="flex gap-1.5">
-                        <button
-                          type="button"
-                          disabled={safeCredsPage <= 1}
-                          onClick={() => setCredsPage(p => Math.max(1, p - 1))}
-                          className="px-3 py-1 rounded-lg bg-slate-50 border border-slate-200 disabled:opacity-40 font-bold"
-                        >
-                          السابق
-                        </button>
-                        <button
-                          type="button"
-                          disabled={safeCredsPage >= totalCredsPages}
-                          onClick={() => setCredsPage(p => Math.min(totalCredsPages, p + 1))}
-                          className="px-3 py-1 rounded-lg bg-slate-50 border border-slate-200 disabled:opacity-40 font-bold"
-                        >
-                          التالي
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
 

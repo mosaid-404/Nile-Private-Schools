@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { Student, AttendanceRecord, SessionInstance, Group, Teacher } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, getTodayDateString } from '../../utils/arabic';
+import { useProgressiveCount } from '../common/VirtualList';
 
 interface Props {
   parentName: string;
@@ -32,68 +33,124 @@ export const ParentReportsView: React.FC<Props> = ({
   const settings = storage.getSettings();
   const todayStr = getTodayDateString();
 
+  const { sessionById, groupById, teacherById, teacherByName, studentById } = useMemo(() => {
+    const sMap = new Map<string, SessionInstance>();
+    for (let i = 0; i < sessions.length; i++) sMap.set(sessions[i].id, sessions[i]);
+    const gMap = new Map<string, Group>();
+    for (let i = 0; i < groups.length; i++) gMap.set(groups[i].id, groups[i]);
+    const tIdMap = new Map<string, Teacher>();
+    const tNameMap = new Map<string, Teacher>();
+    for (let i = 0; i < teachers.length; i++) {
+      tIdMap.set(teachers[i].id, teachers[i]);
+      tNameMap.set(teachers[i].name, teachers[i]);
+    }
+    const cMap = new Map<string, Student>();
+    for (let i = 0; i < childrenList.length; i++) cMap.set(childrenList[i].id, childrenList[i]);
+    return { sessionById: sMap, groupById: gMap, teacherById: tIdMap, teacherByName: tNameMap, studentById: cMap };
+  }, [sessions, groups, teachers, childrenList]);
+
   const targetChildren = useMemo(() => {
     if (selectedChildScope === 'all') return childrenList;
-    return childrenList.filter(c => c.id === selectedChildScope);
-  }, [childrenList, selectedChildScope]);
+    const single = studentById.get(selectedChildScope);
+    return single ? [single] : [];
+  }, [childrenList, studentById, selectedChildScope]);
 
   const targetChildIds = useMemo(() => new Set(targetChildren.map(c => c.id)), [targetChildren]);
 
-  // Per-child summary stats within selected date range
-  const childSummaries = useMemo(() => {
-    return targetChildren.map(child => {
-      const childRecs = attendanceRecords.filter(a => {
-        if (a.studentId !== child.id) return false;
-        const ses = sessions.find(s => s.id === a.sessionId);
-        const recDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
-        if (dateFrom && recDate < dateFrom) return false;
-        if (dateTo && recDate > dateTo) return false;
-        return true;
-      });
-      const total = childRecs.length;
-      const present = childRecs.filter(a => a.status === 'present').length;
-      const absent = childRecs.filter(a => a.status === 'absent').length;
-      const absenceRate = total > 0 ? Math.round((absent / total) * 100) : 0;
-      return { child, total, present, absent, absenceRate };
+  // Single-pass summary stats & detailed rows for target children
+  const { childSummaries, detailedRows } = useMemo(() => {
+    const statsById = new Map<string, { total: number; present: number; absent: number }>();
+    for (let i = 0; i < targetChildren.length; i++) {
+      statsById.set(targetChildren[i].id, { total: 0, present: 0, absent: 0 });
+    }
+
+    const rows: Array<{
+      a: AttendanceRecord;
+      student: Student | undefined;
+      recDate: string;
+      timeText: string;
+      subject: string;
+      sessionLabel: string;
+    }> = [];
+
+    for (let i = 0; i < attendanceRecords.length; i++) {
+      const a = attendanceRecords[i];
+      if (!targetChildIds.has(a.studentId)) continue;
+
+      const ses = sessionById.get(a.sessionId);
+      const recDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
+      if (dateFrom && recDate < dateFrom) continue;
+      if (dateTo && recDate > dateTo) continue;
+
+      const stat = statsById.get(a.studentId);
+      if (stat) {
+        stat.total++;
+        if (a.status === 'present') stat.present++;
+        else if (a.status === 'absent') stat.absent++;
+      }
+
+      if (statusFilter !== 'all' && a.status !== statusFilter) continue;
+
+      const student = studentById.get(a.studentId);
+      const grp = ses ? groupById.get(ses.groupId) : undefined;
+      const tch = (grp ? teacherById.get(grp.teacherId) : undefined) || teacherByName.get(a.recordedBy);
+      const timeText = a.recordedAt
+        ? new Date(a.recordedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+        : '';
+      const subject = a.subjectName || grp?.subject || tch?.subject || 'حصة دراسية';
+      const sessionLabel = a.sessionLabel || grp?.name || '';
+      rows.push({ a, student, recDate, timeText, subject, sessionLabel });
+    }
+
+    rows.sort((x, y) => {
+      const dateCmp = y.recDate.localeCompare(x.recDate);
+      if (dateCmp !== 0) return dateCmp;
+      return x.a.recordedAt.localeCompare(y.a.recordedAt);
     });
-  }, [targetChildren, attendanceRecords, sessions, dateFrom, dateTo]);
 
-  // Detailed records sorted by date descending and within the same day chronologically
-  const detailedRows = useMemo(() => {
-    return attendanceRecords
-      .filter(a => targetChildIds.has(a.studentId))
-      .map(a => {
-        const student = childrenList.find(c => c.id === a.studentId);
-        const ses = sessions.find(s => s.id === a.sessionId);
-        const grp = ses ? groups.find(g => g.id === ses.groupId) : null;
-        const tch = teachers.find(t => t.id === grp?.teacherId || t.name === a.recordedBy);
-        const recDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
-        const timeText = a.recordedAt
-          ? new Date(a.recordedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
-          : '';
-        const subject = a.subjectName || grp?.subject || tch?.subject || 'حصة دراسية';
-        const sessionLabel = a.sessionLabel || grp?.name || '';
-        return { a, student, recDate, timeText, subject, sessionLabel };
-      })
-      .filter(row => {
-        if (statusFilter !== 'all' && row.a.status !== statusFilter) return false;
-        if (dateFrom && row.recDate < dateFrom) return false;
-        if (dateTo && row.recDate > dateTo) return false;
-        return true;
-      })
-      .sort((x, y) => {
-        const dateCmp = y.recDate.localeCompare(x.recDate);
-        if (dateCmp !== 0) return dateCmp;
-        return x.a.recordedAt.localeCompare(y.a.recordedAt);
-      });
-  }, [attendanceRecords, targetChildIds, childrenList, sessions, groups, teachers, statusFilter, dateFrom, dateTo]);
+    const summaries = targetChildren.map(child => {
+      const s = statsById.get(child.id) || { total: 0, present: 0, absent: 0 };
+      const absenceRate = s.total > 0 ? Math.round((s.absent / s.total) * 100) : 0;
+      return { child, total: s.total, present: s.present, absent: s.absent, absenceRate };
+    });
 
-  const totalSessionsAll = childSummaries.reduce((acc, s) => acc + s.total, 0);
-  const totalPresentAll = childSummaries.reduce((acc, s) => acc + s.present, 0);
-  const totalAbsentAll = childSummaries.reduce((acc, s) => acc + s.absent, 0);
+    return { childSummaries: summaries, detailedRows: rows };
+  }, [
+    targetChildren,
+    targetChildIds,
+    attendanceRecords,
+    sessionById,
+    groupById,
+    teacherById,
+    teacherByName,
+    studentById,
+    statusFilter,
+    dateFrom,
+    dateTo
+  ]);
+
+  const { totalSessionsAll, totalPresentAll, totalAbsentAll } = useMemo(() => {
+    let total = 0;
+    let present = 0;
+    let absent = 0;
+    for (let i = 0; i < childSummaries.length; i++) {
+      total += childSummaries[i].total;
+      present += childSummaries[i].present;
+      absent += childSummaries[i].absent;
+    }
+    return { totalSessionsAll: total, totalPresentAll: present, totalAbsentAll: absent };
+  }, [childSummaries]);
 
   const selectedChildObj =
-    selectedChildScope === 'all' ? null : childrenList.find(c => c.id === selectedChildScope) || null;
+    selectedChildScope === 'all' ? null : studentById.get(selectedChildScope) || null;
+
+  const { visibleCount, hasMore, sentinelRef } = useProgressiveCount(
+    detailedRows.length,
+    100,
+    150,
+    `${selectedChildScope}_${statusFilter}_${dateFrom}_${dateTo}`
+  );
+  const visibleDetailedRows = detailedRows.slice(0, visibleCount);
 
   const handleResetFilters = () => {
     setSelectedChildScope('all');
@@ -398,7 +455,7 @@ export const ParentReportsView: React.FC<Props> = ({
                     </td>
                   </tr>
                 ) : (
-                  detailedRows.map(({ a, student, recDate, timeText, subject, sessionLabel }) => (
+                  visibleDetailedRows.map(({ a, student, recDate, timeText, subject, sessionLabel }) => (
                     <tr key={a.id} className="hover:bg-slate-50">
                       <td className="p-2.5 font-bold text-slate-900">{student?.name || '-'}</td>
                       <td className="p-2.5 text-slate-800">
@@ -435,6 +492,11 @@ export const ParentReportsView: React.FC<Props> = ({
               </tbody>
             </table>
           </div>
+          {hasMore && (
+            <div ref={sentinelRef} className="py-3 text-center text-xs text-slate-400 no-print">
+              جاري تحميل المزيد من السجلات ({visibleDetailedRows.length} / {detailedRows.length})...
+            </div>
+          )}
         </div>
       </div>
     </div>

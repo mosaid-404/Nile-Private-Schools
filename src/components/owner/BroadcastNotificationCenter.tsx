@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Send,
   Bell,
@@ -18,9 +18,10 @@ import {
   X,
   Megaphone
 } from 'lucide-react';
-import { Teacher, Student, SchoolClass, BroadcastNotification, User } from '../../types';
+import { User } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime } from '../../utils/arabic';
+import { VirtualList, useProgressiveCount } from '../common/VirtualList';
 
 interface Props {
   currentUser: User;
@@ -49,67 +50,96 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
   const [successInfo, setSuccessInfo] = useState<{ count: number; title: string } | null>(null);
   const [formError, setFormError] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [syncTick, setSyncTick] = useState(0);
 
-  // Data
-  const teachers = storage.getTeachers().filter(t => t.status === 'active');
-  const students = storage.getStudents().filter(s => s.status === 'active');
-  const settings = storage.getSettings();
-  const grades = settings.grades;
-  const classes = storage.getClasses();
-  const broadcasts = storage.getBroadcasts();
+  useEffect(() => {
+    const onSync = () => setSyncTick(t => t + 1);
+    window.addEventListener('nps_cloud_sync', onSync);
+    window.addEventListener('nps_settings_updated', onSync);
+    return () => {
+      window.removeEventListener('nps_cloud_sync', onSync);
+      window.removeEventListener('nps_settings_updated', onSync);
+    };
+  }, []);
 
-  // Compute recipient list based on current target selection
-  const computeRecipients = () => {
+  // Memoized Data
+  const { teachers, students, settings, grades, broadcasts } = useMemo(() => {
+    const tList = storage.getTeachers().filter(t => t.status === 'active');
+    const sList = storage.getStudents().filter(s => s.status === 'active');
+    const cfg = storage.getSettings();
+    const bc = storage.getBroadcasts();
+    return { teachers: tList, students: sList, settings: cfg, grades: cfg.grades, broadcasts: bc };
+  }, [syncTick, successInfo]);
+
+  const selectedTeacherSet = useMemo(() => new Set(selectedTeacherIds), [selectedTeacherIds]);
+  const selectedStudentSet = useMemo(() => new Set(selectedStudentIds), [selectedStudentIds]);
+
+  const filteredTeachersPicker = useMemo(() => {
+    if (targetType !== 'specific_teachers') return [];
+    const q = teacherSearch.trim().toLowerCase();
+    if (!q) return teachers;
+    return teachers.filter(
+      t => t.name.toLowerCase().includes(q) || t.subject.toLowerCase().includes(q) || (t.phone && t.phone.includes(q))
+    );
+  }, [targetType, teachers, teacherSearch]);
+
+  const filteredStudentsPicker = useMemo(() => {
+    if (targetType !== 'specific_students') return [];
+    const q = studentSearch.trim().toLowerCase();
+    if (!q) return students;
+    return students.filter(
+      s => s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q) || (s.parentPhone && s.parentPhone.includes(q))
+    );
+  }, [targetType, students, studentSearch]);
+
+  // Memoized full recipient list (all matching items) so VirtualList renders smoothly without truncation
+  const recipientPreviewList = useMemo(() => {
     if (targetType === 'all_teachers') {
-      return teachers.map(t => ({ id: t.id, name: t.name, role: 'معلم', sub: t.subject }));
+      return teachers.map(t => ({ id: t.id, name: t.name, sub: t.subject }));
     }
     if (targetType === 'specific_teachers') {
-      return teachers
-        .filter(t => selectedTeacherIds.includes(t.id))
-        .map(t => ({ id: t.id, name: t.name, role: 'معلم', sub: t.subject }));
+      return teachers.filter(t => selectedTeacherSet.has(t.id)).map(t => ({ id: t.id, name: t.name, sub: t.subject }));
     }
     if (targetType === 'all_parents') {
-      return students.map(s => ({
-        id: s.id,
-        name: s.name,
-        role: 'ولي أمر',
-        sub: `${s.grade} - فصل ${s.classNumber}`
-      }));
+      return students.map(s => ({ id: s.id, name: s.name, sub: `${s.grade} - فصل ${s.classNumber}` }));
     }
     if (targetType === 'grade' && selectedGrade) {
-      return students
-        .filter(s => s.grade === selectedGrade)
-        .map(s => ({
-          id: s.id,
-          name: s.name,
-          role: 'ولي أمر',
-          sub: `${s.grade} - فصل ${s.classNumber}`
-        }));
+      const list: { id: string; name: string; sub: string }[] = [];
+      for (let i = 0; i < students.length; i++) {
+        const s = students[i];
+        if (s.grade === selectedGrade) {
+          list.push({ id: s.id, name: s.name, sub: `${s.grade} - فصل ${s.classNumber}` });
+        }
+      }
+      return list;
     }
     if (targetType === 'grade_class' && selectedGrade && selectedClassNumber) {
-      return students
-        .filter(s => s.grade === selectedGrade && s.classNumber === selectedClassNumber)
-        .map(s => ({
-          id: s.id,
-          name: s.name,
-          role: 'ولي أمر',
-          sub: `${s.grade} - فصل ${s.classNumber}`
-        }));
+      const list: { id: string; name: string; sub: string }[] = [];
+      for (let i = 0; i < students.length; i++) {
+        const s = students[i];
+        if (s.grade === selectedGrade && s.classNumber === selectedClassNumber) {
+          list.push({ id: s.id, name: s.name, sub: `${s.grade} - فصل ${s.classNumber}` });
+        }
+      }
+      return list;
     }
     if (targetType === 'specific_students') {
-      return students
-        .filter(s => selectedStudentIds.includes(s.id))
-        .map(s => ({
-          id: s.id,
-          name: s.name,
-          role: 'ولي أمر',
-          sub: `${s.grade} - فصل ${s.classNumber}`
-        }));
+      const list: { id: string; name: string; sub: string }[] = [];
+      for (let i = 0; i < students.length; i++) {
+        const s = students[i];
+        if (selectedStudentSet.has(s.id)) {
+          list.push({ id: s.id, name: s.name, sub: `${s.grade} - فصل ${s.classNumber}` });
+        }
+      }
+      return list;
     }
     return [];
-  };
+  }, [targetType, teachers, students, selectedTeacherSet, selectedGrade, selectedClassNumber, selectedStudentSet]);
 
-  const computedRecipients = computeRecipients();
+  const recipientsCount = recipientPreviewList.length;
+
+  const { visibleCount: visibleBroadcastsCount, hasMore: hasMoreBroadcasts, sentinelRef: broadcastsSentinelRef } =
+    useProgressiveCount(broadcasts.length, 50, 80, activeTab === 'history' ? syncTick : 'compose');
 
   // Get Target Label for summary
   const getTargetLabel = () => {
@@ -149,7 +179,7 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
       return;
     }
 
-    if (computedRecipients.length === 0) {
+    if (recipientsCount === 0) {
       setFormError('لم يتم تحديد أي مستلمين، يرجى اختيار جهة الاستهداف المناسبة.');
       return;
     }
@@ -157,8 +187,9 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
     setIsSending(true);
 
     setTimeout(() => {
+      const sentTitle = title.trim();
       const res = storage.sendBroadcastNotification({
-        title: title.trim(),
+        title: sentTitle,
         body: body.trim(),
         category,
         targetType,
@@ -173,13 +204,13 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
       setIsSending(false);
       setSuccessInfo({
         count: res.sentCount,
-        title: title.trim()
+        title: sentTitle
       });
 
       // Reset fields
       setTitle('');
       setBody('');
-    }, 400);
+    }, 50);
   };
 
   const categoryLabels: Record<string, { label: string; bg: string; text: string }> = {
@@ -273,7 +304,7 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
                   <span>تحديد جهة الاستهداف (لمن تريد إرسال الإشعار؟)</span>
                 </div>
                 <span className="text-xs font-extrabold px-3 py-1 rounded-full bg-blue-50 text-[#1F4E8C]">
-                  {computedRecipients.length} مستلم محدد
+                  {recipientsCount} مستلم محدد
                 </span>
               </div>
 
@@ -312,24 +343,53 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
 
               {/* 1. Specific Teachers Selection */}
               {targetType === 'specific_teachers' && (
-                <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-700 mb-1">
-                    <span>اختر المعلمين المطلوبين:</span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedTeacherIds(teachers.map(t => t.id))}
-                      className="text-[#1F4E8C] hover:underline"
-                    >
-                      تحديد الجميع
-                    </button>
+                <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                    <span>اختر المعلمين المطلوبين ({selectedTeacherIds.length} محدد):</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTeacherIds(teachers.map(t => t.id))}
+                        className="text-[#1F4E8C] hover:underline"
+                      >
+                        تحديد الجميع
+                      </button>
+                      {selectedTeacherIds.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTeacherIds([])}
+                          className="text-rose-600 hover:underline"
+                        >
+                          مسح
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
-                    {teachers.map(t => {
-                      const isSelected = selectedTeacherIds.includes(t.id);
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={teacherSearch}
+                      onChange={(e) => setTeacherSearch(e.target.value)}
+                      placeholder="ابحث باسم المعلم أو المادة..."
+                      className="w-full px-3 py-2 pr-9 text-xs rounded-xl border border-slate-300 outline-hidden bg-white"
+                    />
+                    <Search className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
+                  </div>
+                  <VirtualList
+                    items={filteredTeachersPicker}
+                    itemHeight={42}
+                    maxHeight={184}
+                    resetKey={teacherSearch}
+                    className="pr-1 space-y-1"
+                    emptyState={
+                      <p className="text-xs text-slate-400 text-center py-4">لا يوجد معلمون مطابقون للبحث</p>
+                    }
+                    renderItem={(t) => {
+                      const isSelected = selectedTeacherSet.has(t.id);
                       return (
                         <label
                           key={t.id}
-                          className={`p-2.5 rounded-xl border text-xs flex items-center gap-2 cursor-pointer transition ${
+                          className={`h-[38px] mb-1 px-2.5 rounded-xl border text-xs flex items-center gap-2 cursor-pointer transition ${
                             isSelected
                               ? 'bg-blue-100 border-[#1F4E8C] text-[#1F4E8C] font-bold'
                               : 'bg-white border-slate-200 text-slate-700'
@@ -343,13 +403,13 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
                                 isSelected ? prev.filter(x => x !== t.id) : [...prev, t.id]
                               );
                             }}
-                            className="rounded text-[#1F4E8C]"
+                            className="rounded text-[#1F4E8C] shrink-0"
                           />
                           <span className="truncate">{t.name} ({t.subject})</span>
                         </label>
                       );
-                    })}
-                  </div>
+                    }}
+                  />
                 </div>
               )}
 
@@ -429,38 +489,44 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
                     <Search className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
                   </div>
 
-                  <div className="space-y-1 max-h-48 overflow-y-auto divide-y divide-slate-100 pr-1">
-                    {students
-                      .filter(s => s.name.includes(studentSearch) || s.code.includes(studentSearch))
-                      .map(s => {
-                        const isSelected = selectedStudentIds.includes(s.id);
-                        return (
-                          <label
-                            key={s.id}
-                            className={`pt-1.5 p-2 rounded-xl text-xs flex items-center justify-between cursor-pointer transition ${
-                              isSelected ? 'bg-blue-100 font-bold text-[#1F4E8C]' : 'hover:bg-white'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => {
-                                  setSelectedStudentIds(prev =>
-                                    isSelected ? prev.filter(x => x !== s.id) : [...prev, s.id]
-                                  );
-                                }}
-                                className="rounded text-[#1F4E8C]"
-                              />
-                              <span>{s.name}</span>
-                            </div>
-                            <span className="text-[11px] text-slate-400 font-mono">
-                              {s.grade} - {s.classNumber}
-                            </span>
-                          </label>
-                        );
-                      })}
-                  </div>
+                  <VirtualList
+                    items={filteredStudentsPicker}
+                    itemHeight={38}
+                    maxHeight={196}
+                    resetKey={studentSearch}
+                    className="divide-y divide-slate-100 pr-1"
+                    emptyState={
+                      <p className="text-xs text-slate-400 text-center py-4">لا يوجد طلاب مطابقين للبحث</p>
+                    }
+                    renderItem={(s) => {
+                      const isSelected = selectedStudentSet.has(s.id);
+                      return (
+                        <label
+                          key={s.id}
+                          className={`h-[38px] px-2 rounded-xl text-xs flex items-center justify-between cursor-pointer transition ${
+                            isSelected ? 'bg-blue-100 font-bold text-[#1F4E8C]' : 'hover:bg-white'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {
+                                setSelectedStudentIds(prev =>
+                                  isSelected ? prev.filter(x => x !== s.id) : [...prev, s.id]
+                                );
+                              }}
+                              className="rounded text-[#1F4E8C] shrink-0"
+                            />
+                            <span className="truncate">{s.name}</span>
+                          </div>
+                          <span className="text-[11px] text-slate-400 font-mono shrink-0">
+                            {s.grade} - {s.classNumber}
+                          </span>
+                        </label>
+                      );
+                    }}
+                  />
                 </div>
               )}
             </div>
@@ -581,11 +647,11 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
 
                 <button
                   type="submit"
-                  disabled={isSending || computedRecipients.length === 0}
+                  disabled={isSending || recipientsCount === 0}
                   className="py-3 px-8 bg-[#1F4E8C] hover:bg-[#163A6B] disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-2 cursor-pointer"
                 >
                   <Send className="w-4 h-4" />
-                  <span>{isSending ? 'جاري الإرسال...' : `إرسال الآن إلى (${computedRecipients.length})`}</span>
+                  <span>{isSending ? 'جاري الإرسال...' : `إرسال الآن إلى (${recipientsCount})`}</span>
                 </button>
               </div>
             </div>
@@ -632,34 +698,34 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
             <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200 space-y-3 text-right">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <span className="text-xs font-bold text-slate-800">
-                  قائمة المستلمين ({computedRecipients.length}):
+                  قائمة المستلمين ({recipientsCount}):
                 </span>
                 <span className="text-[10px] text-slate-400 font-semibold">{getTargetLabel()}</span>
               </div>
 
-              {computedRecipients.length === 0 ? (
+              {recipientsCount === 0 ? (
                 <p className="text-xs text-slate-400 text-center py-6">
                   لم يتم اختيار أي مستلمين حتى الآن.
                 </p>
               ) : (
-                <div className="space-y-1.5 max-h-56 overflow-y-auto divide-y divide-slate-100 pr-1 text-xs">
-                  {computedRecipients.slice(0, 30).map((r, i) => (
-                    <div key={i} className="pt-1.5 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold flex items-center justify-center">
+                <VirtualList
+                  items={recipientPreviewList}
+                  itemHeight={34}
+                  maxHeight={224}
+                  resetKey={`${targetType}_${recipientsCount}`}
+                  className="divide-y divide-slate-100 pr-1 text-xs"
+                  renderItem={(r, i) => (
+                    <div key={r.id || i} className="h-[34px] flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold flex items-center justify-center shrink-0">
                           {i + 1}
                         </span>
-                        <strong className="text-slate-800 truncate max-w-[120px]">{r.name}</strong>
+                        <strong className="text-slate-800 truncate">{r.name}</strong>
                       </div>
-                      <span className="text-[10px] text-slate-400">{r.sub}</span>
+                      <span className="text-[10px] text-slate-400 shrink-0">{r.sub}</span>
                     </div>
-                  ))}
-                  {computedRecipients.length > 30 && (
-                    <p className="text-[10px] text-slate-400 text-center pt-2">
-                      وغيرهم ({computedRecipients.length - 30} مستلم إضافي)...
-                    </p>
                   )}
-                </div>
+                />
               )}
             </div>
           </div>
@@ -686,7 +752,7 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
             </div>
           ) : (
             <div className="space-y-3">
-              {broadcasts.map(bc => {
+              {broadcasts.slice(0, visibleBroadcastsCount).map(bc => {
                 const cat = categoryLabels[bc.category] || categoryLabels.general;
                 return (
                   <div
@@ -725,6 +791,11 @@ export const BroadcastNotificationCenter: React.FC<Props> = ({ currentUser }) =>
                   </div>
                 );
               })}
+              {hasMoreBroadcasts && (
+                <div ref={broadcastsSentinelRef} className="py-2 text-center text-xs text-slate-400">
+                  جاري تحميل باقي السجلات...
+                </div>
+              )}
             </div>
           )}
         </div>

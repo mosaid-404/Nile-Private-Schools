@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Shield,
   Search,
@@ -8,12 +8,13 @@ import {
   UserX,
   History,
   AlertCircle,
-  Copy,
-  Printer
+  CheckCircle2,
+  X
 } from 'lucide-react';
-import { User, AuditLog, UserRole } from '../../types';
+import { User, AuditLog } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime } from '../../utils/arabic';
+import { useProgressiveCount } from '../common/VirtualList';
 
 export const UserManagement: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'users' | 'audit'>('users');
@@ -21,6 +22,7 @@ export const UserManagement: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => storage.getAuditLogs());
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('');
+  const [actionNotice, setActionNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showAddStaffModal, setShowAddStaffModal] = useState(false);
 
   // New Staff form
@@ -35,8 +37,8 @@ export const UserManagement: React.FC = () => {
   const [tempPassInfo, setTempPassInfo] = useState<{ name: string; username: string; pass: string } | null>(null);
 
   const refreshUsers = () => {
-    setUsers(storage.getUsers());
-    setAuditLogs(storage.getAuditLogs());
+    setUsers([...storage.getUsers()]);
+    setAuditLogs([...storage.getAuditLogs()]);
   };
 
   useEffect(() => {
@@ -52,18 +54,17 @@ export const UserManagement: React.FC = () => {
 
   // Toggle user status (USR-02, USR-04)
   const handleToggleStatus = (user: User) => {
-    // Cannot disable last active owner (USR-04)
     if (user.role === 'owner' && user.status === 'active') {
       const activeOwners = users.filter(u => u.role === 'owner' && u.status === 'active');
       if (activeOwners.length <= 1) {
-        alert('لا يمكن تعطيل آخر حساب مالك نشط في النظام!');
+        setActionNotice({ type: 'error', text: 'لا يمكن تعطيل آخر حساب مالك نشط في النظام!' });
         return;
       }
     }
 
     const newStatus = user.status === 'active' ? 'disabled' : 'active';
-    user.status = newStatus;
-    storage.saveUsers(users);
+    const nextUsers = users.map(u => (u.id === user.id ? { ...u, status: newStatus as 'active' | 'disabled' } : u));
+    storage.saveUsers(nextUsers);
 
     storage.logAudit(
       'admin',
@@ -74,16 +75,21 @@ export const UserManagement: React.FC = () => {
       `تم ${newStatus === 'disabled' ? 'تعطيل' : 'تفعيل'} حساب ${user.displayName} (${user.username})`
     );
 
+    setActionNotice({
+      type: 'success',
+      text: `تم ${newStatus === 'disabled' ? 'تعطيل' : 'تفعيل'} حساب ${user.displayName} بنجاح.`
+    });
     refreshUsers();
   };
 
   // Reset password (USR-02, PAR-07)
   const handleResetPassword = (user: User) => {
     if (user.role === 'parent') {
-      // Resets to phone number
-      user.passwordHash = user.phone || user.username;
-      user.mustChangePassword = false;
-      storage.saveUsers(users);
+      const resetPass = user.phone || user.username;
+      const nextUsers = users.map(u =>
+        u.id === user.id ? { ...u, passwordHash: resetPass, mustChangePassword: false } : u
+      );
+      storage.saveUsers(nextUsers);
       storage.logAudit(
         'admin',
         'المالك',
@@ -92,16 +98,19 @@ export const UserManagement: React.FC = () => {
         user.id,
         `تم إعادة تعيين كلمة مرور ولي الأمر ${user.displayName} إلى رقم الهاتف الأصلي (${user.phone})`
       );
-      alert(`تمت إعادة تعيين كلمة مرور ولي الأمر إلى رقم هاتفه: ${user.phone}`);
+      setActionNotice({
+        type: 'success',
+        text: `تمت إعادة تعيين كلمة مرور ولي الأمر (${user.displayName}) إلى رقم هاتفه: ${resetPass}`
+      });
     } else {
-      // Generate 8-char random temporary password
       const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
       let temp = '';
       for (let i = 0; i < 8; i++) temp += chars.charAt(Math.floor(Math.random() * chars.length));
 
-      user.passwordHash = temp;
-      user.mustChangePassword = true;
-      storage.saveUsers(users);
+      const nextUsers = users.map(u =>
+        u.id === user.id ? { ...u, passwordHash: temp, mustChangePassword: true } : u
+      );
+      storage.saveUsers(nextUsers);
       storage.logAudit(
         'admin',
         'المالك',
@@ -147,8 +156,8 @@ export const UserManagement: React.FC = () => {
       createdAt: new Date().toISOString()
     };
 
-    users.push(newUser);
-    storage.saveUsers(users);
+    const nextUsers = [...users, newUser];
+    storage.saveUsers(nextUsers);
 
     storage.logAudit(
       'admin',
@@ -166,15 +175,42 @@ export const UserManagement: React.FC = () => {
     refreshUsers();
   };
 
-  const filteredUsers = users.filter(u => {
-    const name = u.displayName || (u.role === 'owner' ? 'الادمن' : u.username);
-    const matchesSearch =
-      name.includes(searchTerm) ||
-      u.username.includes(searchTerm) ||
-      (u.phone && u.phone.includes(searchTerm));
-    const matchesRole = !roleFilter || u.role === roleFilter;
-    return matchesSearch && matchesRole;
-  });
+  const filteredUsers = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return users.filter(u => {
+      const matchesRole = !roleFilter || u.role === roleFilter;
+      if (!matchesRole) return false;
+      if (!q) return true;
+      const name = (u.displayName || (u.role === 'owner' ? 'الادمن' : u.username)).toLowerCase();
+      return (
+        name.includes(q) ||
+        u.username.toLowerCase().includes(q) ||
+        (u.phone && u.phone.includes(q))
+      );
+    });
+  }, [users, searchTerm, roleFilter]);
+
+  const {
+    visibleCount: visibleUsersCount,
+    hasMore: hasMoreUsers,
+    sentinelRef: usersSentinelRef
+  } = useProgressiveCount(filteredUsers.length, 60, 120, `${searchTerm}_${roleFilter}_${activeTab}`);
+
+  const {
+    visibleCount: visibleAuditCount,
+    hasMore: hasMoreAudit,
+    sentinelRef: auditSentinelRef
+  } = useProgressiveCount(auditLogs.length, 60, 120, activeTab);
+
+  const visibleUsers = useMemo(
+    () => filteredUsers.slice(0, visibleUsersCount),
+    [filteredUsers, visibleUsersCount]
+  );
+
+  const visibleAuditLogs = useMemo(
+    () => auditLogs.slice(0, visibleAuditCount),
+    [auditLogs, visibleAuditCount]
+  );
 
   return (
     <div className="space-y-5">
@@ -224,6 +260,32 @@ export const UserManagement: React.FC = () => {
       {/* Tab: Users Table (USR-01) */}
       {activeTab === 'users' && (
         <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden space-y-4 p-5">
+          {actionNotice && (
+            <div
+              className={`p-3 rounded-xl text-xs font-bold flex items-center justify-between gap-2 border ${
+                actionNotice.type === 'error'
+                  ? 'bg-rose-50 border-rose-200 text-rose-800'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                {actionNotice.type === 'error' ? (
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                )}
+                <span>{actionNotice.text}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActionNotice(null)}
+                className="p-0.5 hover:opacity-70"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {/* Filters */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="relative">
@@ -264,57 +326,71 @@ export const UserManagement: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredUsers.map((u, idx) => (
-                  <tr key={`${u.id}_${idx}`} className="hover:bg-slate-50/70 transition">
-                    <td className="p-3 font-bold text-slate-900">{u.displayName || (u.role === 'owner' ? 'الادمن' : u.username)}</td>
-                    <td className="p-3">
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-[#1F4E8C]">
-                        {roleLabels[u.role] || u.role}
-                      </span>
-                    </td>
-                    <td className="p-3 font-mono text-slate-700 font-semibold">{u.username}</td>
-                    <td className="p-3">
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          u.status === 'active'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-rose-100 text-rose-800'
-                        }`}
-                      >
-                        {u.status === 'active' ? 'نشط' : 'معطّل'}
-                      </span>
-                    </td>
-                    <td className="p-3 text-slate-400 text-[11px]">
-                      {u.lastLogin ? formatArabicDate(u.lastLogin) : 'لم يسجل دخول'}
-                    </td>
-                    <td className="p-3 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <button
-                          onClick={() => handleResetPassword(u)}
-                          className="p-1.5 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 transition"
-                          title="إعادة تعيين كلمة المرور"
-                        >
-                          <Key className="w-3.5 h-3.5" />
-                        </button>
-
-                        <button
-                          onClick={() => handleToggleStatus(u)}
-                          className={`p-1.5 rounded-lg transition ${
-                            u.status === 'active'
-                              ? 'bg-rose-50 text-rose-600 hover:bg-rose-100'
-                              : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
-                          }`}
-                          title={u.status === 'active' ? 'تعطيل الحساب' : 'تفعيل الحساب'}
-                        >
-                          {u.status === 'active' ? <UserX className="w-3.5 h-3.5" /> : <UserCheck className="w-3.5 h-3.5" />}
-                        </button>
-                      </div>
+                {visibleUsers.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="p-8 text-center text-slate-400">
+                      لا توجد حسابات مطابقة للبحث
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  visibleUsers.map((u, idx) => (
+                    <tr key={`${u.id}_${idx}`} className="hover:bg-slate-50/70 transition">
+                      <td className="p-3 font-bold text-slate-900">{u.displayName || (u.role === 'owner' ? 'الادمن' : u.username)}</td>
+                      <td className="p-3">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-[#1F4E8C]">
+                          {roleLabels[u.role] || u.role}
+                        </span>
+                      </td>
+                      <td className="p-3 font-mono text-slate-700 font-semibold">{u.username}</td>
+                      <td className="p-3">
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            u.status === 'active'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}
+                        >
+                          {u.status === 'active' ? 'نشط' : 'معطّل'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-slate-400 text-[11px]">
+                        {u.lastLogin ? formatArabicDate(u.lastLogin) : 'لم يسجل دخول'}
+                      </td>
+                      <td className="p-3 text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={() => handleResetPassword(u)}
+                            className="p-1.5 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 transition"
+                            title="إعادة تعيين كلمة المرور"
+                          >
+                            <Key className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            onClick={() => handleToggleStatus(u)}
+                            className={`p-1.5 rounded-lg transition ${
+                              u.status === 'active'
+                                ? 'bg-rose-50 text-rose-600 hover:bg-rose-100'
+                                : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100'
+                            }`}
+                            title={u.status === 'active' ? 'تعطيل الحساب' : 'تفعيل الحساب'}
+                          >
+                            {u.status === 'active' ? <UserX className="w-3.5 h-3.5" /> : <UserCheck className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
+
+          {hasMoreUsers && (
+            <div ref={usersSentinelRef} className="pt-2 text-center text-xs text-slate-400">
+              جاري تحميل باقي الحسابات ({visibleUsers.length} / {filteredUsers.length})...
+            </div>
+          )}
         </div>
       )}
 
@@ -338,7 +414,7 @@ export const UserManagement: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {auditLogs.map(log => (
+                {visibleAuditLogs.map(log => (
                   <tr key={log.id} className="hover:bg-slate-50/60">
                     <td className="p-2.5 font-bold text-slate-800">{log.userName}</td>
                     <td className="p-2.5 font-semibold text-[#1F4E8C]">{log.action}</td>
@@ -352,6 +428,12 @@ export const UserManagement: React.FC = () => {
               </tbody>
             </table>
           </div>
+
+          {hasMoreAudit && (
+            <div ref={auditSentinelRef} className="pt-2 text-center text-xs text-slate-400">
+              جاري تحميل باقي السجلات...
+            </div>
+          )}
         </div>
       )}
 

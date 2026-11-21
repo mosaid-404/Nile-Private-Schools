@@ -1699,30 +1699,40 @@ class StorageService {
     const sessionDate = meta?.sessionDate || (session ? session.date : getTodayDateString());
     const nowIso = new Date().toISOString();
 
+    const studentById = new Map<string, Student>();
+    for (let i = 0; i < students.length; i++) studentById.set(students[i].id, students[i]);
+
+    const existingIdxByStudentId = new Map<string, number>();
+    for (let i = 0; i < allAttendance.length; i++) {
+      if (allAttendance[i].sessionId === sessionId) {
+        existingIdxByStudentId.set(allAttendance[i].studentId, i);
+      }
+    }
+
+    const teacherObj = teachers.find(
+      t => t.id === group?.teacherId || t.name === recordedBy
+    );
+    const subjectLabel = meta?.subjectName || group?.subject || teacherObj?.subject || 'الحصة الدراسية';
+    const sessionLabel = meta?.sessionLabel || group?.name || subjectLabel;
+    const teacherLabel = teacherObj ? `${teacherObj.name} (${teacherObj.subject})` : recordedBy;
+
     let absentCount = 0;
-    let notifiedCount = 0;
+    const pendingNotifications: Omit<AppNotification, 'id' | 'createdAt' | 'status' | 'isRead'>[] = [];
 
     for (let idx = 0; idx < records.length; idx++) {
       const item = records[idx];
-      const student = students.find(s => s.id === item.studentId);
-      const existingIdx = allAttendance.findIndex(a => a.sessionId === sessionId && a.studentId === item.studentId);
+      const student = studentById.get(item.studentId);
+      const existingIdx = existingIdxByStudentId.get(item.studentId);
 
       if (item.status === 'absent') {
         absentCount++;
       }
 
-      const teacherObj = teachers.find(
-        t => t.id === group?.teacherId || t.name === recordedBy
-      );
-      const subjectLabel = meta?.subjectName || group?.subject || teacherObj?.subject || 'الحصة الدراسية';
-      const sessionLabel = meta?.sessionLabel || group?.name || subjectLabel;
-      const teacherLabel = teacherObj ? `${teacherObj.name} (${teacherObj.subject})` : recordedBy;
       const parentPref = student
         ? this.getParentNotificationPref(student.parentId, student.parentPhone)
         : 'both';
 
-      if (existingIdx !== -1) {
-        // Update existing record for the exact same scheduled sessionId
+      if (existingIdx !== undefined) {
         const old = allAttendance[existingIdx];
         if (old.status !== item.status) {
           const history = old.history || [];
@@ -1742,10 +1752,9 @@ class StorageService {
             history
           };
 
-          // If changed from present to absent, send absence alert if allowed by parent preference
           if (old.status === 'present' && item.status === 'absent' && student) {
             if (this.shouldDeliverAttendanceNotif(parentPref, 'absence')) {
-              this.sendPushNotification({
+              pendingNotifications.push({
                 recipientPhone: student.parentPhone,
                 recipientRole: 'parent',
                 title: 'تنبيه غياب',
@@ -1754,11 +1763,9 @@ class StorageService {
                 type: 'absence',
                 studentId: student.id
               });
-              notifiedCount++;
             }
           } else if (old.status === 'absent' && item.status === 'present' && student) {
-            // If corrected to present, send correction alert (ATT-12)
-            this.sendPushNotification({
+            pendingNotifications.push({
               recipientPhone: student.parentPhone,
               recipientRole: 'parent',
               title: 'تصحيح حالة الحضور',
@@ -1767,11 +1774,9 @@ class StorageService {
               type: 'correction',
               studentId: student.id
             });
-            notifiedCount++;
           }
         }
       } else {
-        // New record (appended sequentially per session)
         allAttendance.push({
           id: `att_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
           sessionId,
@@ -1789,7 +1794,7 @@ class StorageService {
 
         if (item.status === 'absent' && student) {
           if (this.shouldDeliverAttendanceNotif(parentPref, 'absence')) {
-            this.sendPushNotification({
+            pendingNotifications.push({
               recipientPhone: student.parentPhone,
               recipientRole: 'parent',
               title: 'تنبيه غياب',
@@ -1798,11 +1803,10 @@ class StorageService {
               type: 'absence',
               studentId: student.id
             });
-            notifiedCount++;
           }
         } else if (item.status === 'present' && student) {
           if (this.shouldDeliverAttendanceNotif(parentPref, 'presence')) {
-            this.sendPushNotification({
+            pendingNotifications.push({
               recipientPhone: student.parentPhone,
               recipientRole: 'parent',
               title: 'إشعار حضور',
@@ -1811,13 +1815,17 @@ class StorageService {
               type: 'presence',
               studentId: student.id
             });
-            notifiedCount++;
           }
         }
       }
     }
 
     this.set(STORAGE_KEYS.ATTENDANCE, allAttendance);
+
+    if (pendingNotifications.length > 0) {
+      this.sendPushNotificationsBatch(pendingNotifications);
+    }
+    const notifiedCount = pendingNotifications.length;
 
     this.logAudit(
       'user',
@@ -1837,16 +1845,20 @@ class StorageService {
     label?: string
   ): { notifiedCount: number } {
     const students = this.getStudents();
+    const studentById = new Map<string, Student>();
+    for (let i = 0; i < students.length; i++) {
+      if (students[i].status === 'active') studentById.set(students[i].id, students[i]);
+    }
     const todayStr = getTodayDateString();
     const nowTime = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
-    let notifiedCount = 0;
+    const pendingNotifications: Omit<AppNotification, 'id' | 'createdAt' | 'status' | 'isRead'>[] = [];
 
     for (const id of studentIds) {
-      const student = students.find(s => s.id === id && s.status === 'active');
+      const student = studentById.get(id);
       if (!student) continue;
       const pref = this.getParentNotificationPref(student.parentId, student.parentPhone);
       if (this.shouldDeliverAttendanceNotif(pref, 'departure')) {
-        this.sendPushNotification({
+        pendingNotifications.push({
           recipientPhone: student.parentPhone,
           recipientRole: 'parent',
           title: 'إشعار انصراف',
@@ -1855,9 +1867,13 @@ class StorageService {
           type: 'departure',
           studentId: student.id
         });
-        notifiedCount++;
       }
     }
+
+    if (pendingNotifications.length > 0) {
+      this.sendPushNotificationsBatch(pendingNotifications);
+    }
+    const notifiedCount = pendingNotifications.length;
 
     this.logAudit(
       'user',
@@ -2040,6 +2056,79 @@ class StorageService {
     return this.get<BroadcastNotification[]>(STORAGE_KEYS.BROADCASTS, []);
   }
 
+  private sendPushNotificationsBatch(items: Omit<AppNotification, 'id' | 'createdAt' | 'status' | 'isRead'>[]): void {
+    if (items.length === 0) return;
+    const notifications = this.getNotifications();
+    const nowIso = new Date().toISOString();
+    const baseTs = Date.now();
+    const currentUser = this.getCurrentUser();
+    const created: AppNotification[] = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const data = items[i];
+      const newNotif: AppNotification = {
+        ...data,
+        id: `notif_${baseTs}_${i}_${Math.floor(Math.random() * 1000)}`,
+        status: 'sent',
+        isRead: false,
+        createdAt: nowIso
+      };
+      created.push(newNotif);
+    }
+
+    // Prepend newest first and persist in ONE write instead of N writes
+    const nextNotifications = [...created.slice().reverse(), ...notifications];
+    this.set(STORAGE_KEYS.NOTIFICATIONS, nextNotifications);
+
+    // Notify local device if current user is targeted
+    if (currentUser && currentUser.role !== 'owner') {
+      const localMatch = created.find(
+        newNotif =>
+          (newNotif.recipientUserId && currentUser.id === newNotif.recipientUserId) ||
+          (!newNotif.recipientUserId &&
+            (currentUser.phone === newNotif.recipientPhone ||
+              (!newNotif.recipientPhone && currentUser.role === newNotif.recipientRole)))
+      );
+      if (localMatch) {
+        this.triggerDeviceNotification(
+          localMatch.title,
+          localMatch.body,
+          localMatch.url,
+          localMatch.studentId,
+          `nps_${localMatch.id}`
+        );
+        this.playNotificationSound();
+      }
+    }
+
+    // Dispatch remote Web Push asynchronously in small chunks without starving the UI thread
+    const remoteList = created.filter(n => n.recipientRole !== 'owner');
+    if (remoteList.length > 0) {
+      let cursor = 0;
+      const pump = () => {
+        const end = Math.min(cursor + 25, remoteList.length);
+        for (; cursor < end; cursor++) {
+          const n = remoteList[cursor];
+          dispatchRemoteWebPush({
+            notifId: n.id,
+            recipientUserId: n.recipientUserId,
+            recipientPhone: n.recipientPhone,
+            recipientRole: n.recipientRole,
+            notificationType: n.type,
+            title: n.title,
+            body: n.body,
+            url: n.url,
+            studentId: n.studentId
+          });
+        }
+        if (cursor < remoteList.length) {
+          setTimeout(pump, 50);
+        }
+      };
+      setTimeout(pump, 0);
+    }
+  }
+
   public sendBroadcastNotification(data: {
     title: string;
     body: string;
@@ -2054,7 +2143,6 @@ class StorageService {
   }): { broadcast: BroadcastNotification; sentCount: number } {
     const teachers = this.getTeachers();
     const students = this.getStudents();
-    const parents = this.getParents();
 
     interface TargetRecipient {
       phone: string;
@@ -2066,65 +2154,74 @@ class StorageService {
     const recipientsMap = new Map<string, TargetRecipient>();
 
     if (data.targetType === 'all_teachers') {
-      teachers.filter(t => t.status === 'active').forEach(t => {
-        if (t.phone) {
+      teachers.forEach(t => {
+        if (t.status === 'active' && t.phone) {
           recipientsMap.set(t.phone, { phone: t.phone, role: 'teacher', name: t.name });
         }
       });
     } else if (data.targetType === 'specific_teachers' && data.teacherIds) {
-      teachers.filter(t => t.status === 'active' && data.teacherIds?.includes(t.id)).forEach(t => {
-        if (t.phone) {
+      const idSet = new Set(data.teacherIds);
+      teachers.forEach(t => {
+        if (t.status === 'active' && idSet.has(t.id) && t.phone) {
           recipientsMap.set(t.phone, { phone: t.phone, role: 'teacher', name: t.name });
         }
       });
     } else if (data.targetType === 'all_parents') {
-      students.filter(s => s.status === 'active').forEach(s => {
-        recipientsMap.set(s.parentPhone, {
-          phone: s.parentPhone,
-          role: 'parent',
-          name: `ولي أمر ${s.name}`,
-          studentId: s.id
-        });
+      students.forEach(s => {
+        if (s.status === 'active') {
+          recipientsMap.set(s.parentPhone, {
+            phone: s.parentPhone,
+            role: 'parent',
+            name: `ولي أمر ${s.name}`,
+            studentId: s.id
+          });
+        }
       });
     } else if (data.targetType === 'grade' && data.grade) {
-      students.filter(s => s.status === 'active' && s.grade === data.grade).forEach(s => {
-        recipientsMap.set(s.parentPhone, {
-          phone: s.parentPhone,
-          role: 'parent',
-          name: `ولي أمر ${s.name}`,
-          studentId: s.id
-        });
+      students.forEach(s => {
+        if (s.status === 'active' && s.grade === data.grade) {
+          recipientsMap.set(s.parentPhone, {
+            phone: s.parentPhone,
+            role: 'parent',
+            name: `ولي أمر ${s.name}`,
+            studentId: s.id
+          });
+        }
       });
     } else if (data.targetType === 'grade_class' && data.grade && data.classNumber) {
-      students.filter(s => s.status === 'active' && s.grade === data.grade && s.classNumber === data.classNumber).forEach(s => {
-        recipientsMap.set(s.parentPhone, {
-          phone: s.parentPhone,
-          role: 'parent',
-          name: `ولي أمر ${s.name}`,
-          studentId: s.id
-        });
+      students.forEach(s => {
+        if (s.status === 'active' && s.grade === data.grade && s.classNumber === data.classNumber) {
+          recipientsMap.set(s.parentPhone, {
+            phone: s.parentPhone,
+            role: 'parent',
+            name: `ولي أمر ${s.name}`,
+            studentId: s.id
+          });
+        }
       });
     } else if (data.targetType === 'specific_students' && data.studentIds) {
-      students.filter(s => s.status === 'active' && data.studentIds?.includes(s.id)).forEach(s => {
-        recipientsMap.set(s.parentPhone, {
-          phone: s.parentPhone,
-          role: 'parent',
-          name: `ولي أمر ${s.name}`,
-          studentId: s.id
-        });
+      const idSet = new Set(data.studentIds);
+      students.forEach(s => {
+        if (s.status === 'active' && idSet.has(s.id)) {
+          recipientsMap.set(s.parentPhone, {
+            phone: s.parentPhone,
+            role: 'parent',
+            name: `ولي أمر ${s.name}`,
+            studentId: s.id
+          });
+        }
       });
     }
 
     const recipientsList = Array.from(recipientsMap.values());
     const uniqueRecipientPhones = new Set<string>();
-    const sentCount = recipientsList.length;
+    const batchItems: Omit<AppNotification, 'id' | 'createdAt' | 'status' | 'isRead'>[] = [];
 
-    // Dispatch individual app notifications (deduplicated by unique Set)
     for (const recipient of recipientsList) {
       if (!recipient.phone || uniqueRecipientPhones.has(recipient.phone)) continue;
       uniqueRecipientPhones.add(recipient.phone);
 
-      this.sendPushNotification({
+      batchItems.push({
         recipientPhone: recipient.phone,
         recipientRole: recipient.role,
         recipientName: recipient.name,
@@ -2137,6 +2234,9 @@ class StorageService {
         targetLabel: data.targetLabel
       });
     }
+
+    const sentCount = recipientsList.length;
+    this.sendPushNotificationsBatch(batchItems);
 
     const broadcast: BroadcastNotification = {
       id: `bc_${Date.now()}_${Math.floor(Math.random() * 1000)}`,

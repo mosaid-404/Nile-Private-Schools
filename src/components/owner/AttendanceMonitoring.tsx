@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Calendar,
   CheckCircle2,
@@ -10,7 +10,7 @@ import {
   Eye,
   Check
 } from 'lucide-react';
-import { SessionInstance, Group, Teacher, AttendanceRecord, Student, User } from '../../types';
+import { SessionInstance, Group, Teacher, ScheduleSlot, User } from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime, getTodayDateString } from '../../utils/arabic';
 import { SessionAttendanceModal } from '../teacher/SessionAttendanceModal';
@@ -24,31 +24,84 @@ export const AttendanceMonitoring: React.FC<Props> = ({ currentUser }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'recorded' | 'unrecorded'>('all');
   const [selectedSession, setSelectedSession] = useState<SessionInstance | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
 
-  const groups = storage.getGroups();
-  const teachers = storage.getTeachers();
-  const slots = storage.getScheduleSlots();
-  const sessions = storage.getOrCreateSessionsForDate(selectedDate);
-  const attendance = storage.getAttendanceRecords();
+  const {
+    sessions,
+    groupById,
+    teacherById,
+    slotById,
+    sessionStatsById,
+    recordedCount,
+    unrecordedCount,
+    filteredSessions
+  } = useMemo(() => {
+    const groups = storage.getGroups();
+    const teachers = storage.getTeachers();
+    const slots = storage.getScheduleSlots();
+    const sessionsList = storage.getOrCreateSessionsForDate(selectedDate);
+    const attendance = storage.getAttendanceRecords();
 
-  const filteredSessions = sessions.filter(s => {
-    const grp = groups.find(g => g.id === s.groupId);
-    const tch = teachers.find(t => t.id === grp?.teacherId);
-    const matchesSearch =
-      (grp && grp.name.includes(searchTerm)) ||
-      (grp && grp.subject.includes(searchTerm)) ||
-      (tch && tch.name.includes(searchTerm));
+    const gMap = new Map<string, Group>();
+    for (let i = 0; i < groups.length; i++) gMap.set(groups[i].id, groups[i]);
 
-    const matchesStatus =
-      statusFilter === 'all' ||
-      (statusFilter === 'recorded' && s.status === 'recorded') ||
-      (statusFilter === 'unrecorded' && s.status !== 'recorded');
+    const tMap = new Map<string, Teacher>();
+    for (let i = 0; i < teachers.length; i++) tMap.set(teachers[i].id, teachers[i]);
 
-    return matchesSearch && matchesStatus;
-  });
+    const sMap = new Map<string, ScheduleSlot>();
+    for (let i = 0; i < slots.length; i++) sMap.set(slots[i].id, slots[i]);
 
-  const recordedCount = sessions.filter(s => s.status === 'recorded').length;
-  const unrecordedCount = sessions.length - recordedCount;
+    const sessionIdsSet = new Set<string>(sessionsList.map(s => s.id));
+    const statsMap = new Map<string, { present: number; absent: number }>();
+    for (let i = 0; i < attendance.length; i++) {
+      const rec = attendance[i];
+      if (!sessionIdsSet.has(rec.sessionId)) continue;
+      let st = statsMap.get(rec.sessionId);
+      if (!st) {
+        st = { present: 0, absent: 0 };
+        statsMap.set(rec.sessionId, st);
+      }
+      if (rec.status === 'present') st.present++;
+      else if (rec.status === 'absent') st.absent++;
+    }
+
+    let recCount = 0;
+    const q = searchTerm.trim().toLowerCase();
+    const filtered: SessionInstance[] = [];
+    for (let i = 0; i < sessionsList.length; i++) {
+      const s = sessionsList[i];
+      if (s.status === 'recorded') recCount++;
+      const matchesStatus =
+        statusFilter === 'all' ||
+        (statusFilter === 'recorded' && s.status === 'recorded') ||
+        (statusFilter === 'unrecorded' && s.status !== 'recorded');
+      if (!matchesStatus) continue;
+
+      if (!q) {
+        filtered.push(s);
+        continue;
+      }
+      const grp = gMap.get(s.groupId);
+      const tch = grp ? tMap.get(grp.teacherId) : undefined;
+      if (
+        (grp && (grp.name.toLowerCase().includes(q) || grp.subject.toLowerCase().includes(q))) ||
+        (tch && tch.name.toLowerCase().includes(q))
+      ) {
+        filtered.push(s);
+      }
+    }
+
+    return {
+      sessions: sessionsList,
+      groupById: gMap,
+      teacherById: tMap,
+      slotById: sMap,
+      sessionStatsById: statsMap,
+      recordedCount: recCount,
+      unrecordedCount: sessionsList.length - recCount,
+      filteredSessions: filtered
+    };
+  }, [selectedDate, searchTerm, statusFilter, refreshTick]);
 
   return (
     <div className="space-y-5">
@@ -135,15 +188,14 @@ export const AttendanceMonitoring: React.FC<Props> = ({ currentUser }) => {
       {/* Sessions Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredSessions.map(session => {
-          const grp = groups.find(g => g.id === session.groupId);
-          const tch = teachers.find(t => t.id === grp?.teacherId);
-          const slot = slots.find(s => s.id === session.scheduleSlotId);
+          const grp = groupById.get(session.groupId);
+          const tch = grp ? teacherById.get(grp.teacherId) : undefined;
+          const slot = slotById.get(session.scheduleSlotId);
           const isRecorded = session.status === 'recorded';
 
-          // Session attendance stats
-          const sessionRecords = attendance.filter(a => a.sessionId === session.id);
-          const present = sessionRecords.filter(a => a.status === 'present').length;
-          const absent = sessionRecords.filter(a => a.status === 'absent').length;
+          const stats = sessionStatsById.get(session.id);
+          const present = stats?.present || 0;
+          const absent = stats?.absent || 0;
 
           return (
             <div
@@ -214,6 +266,7 @@ export const AttendanceMonitoring: React.FC<Props> = ({ currentUser }) => {
           onClose={() => setSelectedSession(null)}
           onSaved={() => {
             setSelectedSession(null);
+            setRefreshTick(t => t + 1);
           }}
         />
       )}

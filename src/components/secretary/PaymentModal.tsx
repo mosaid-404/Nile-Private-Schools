@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { CreditCard, Search, Check, AlertCircle, ArrowRight, User } from 'lucide-react';
 import { Student, Invoice, Receipt, User as UserType } from '../../types';
 import { storage } from '../../services/storage';
 import { formatCurrency } from '../../utils/arabic';
+import { VirtualList } from '../common/VirtualList';
 
 interface Props {
   isOpen: boolean;
@@ -28,25 +29,10 @@ export const PaymentModal: React.FC<Props> = ({
   const [note, setNote] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  const allStudents = storage.getStudents().filter(s => s.status === 'active');
-
-  useEffect(() => {
-    if (!isOpen) {
-      setSelectedStudent(null);
-      setSelectedInvoiceId('');
-      setAmount(0);
-      setNote('');
-      setErrorMsg('');
-      return;
-    }
-
-    if (initialStudentId) {
-      const st = allStudents.find(s => s.id === initialStudentId);
-      if (st) handleSelectStudent(st);
-    }
-  }, [isOpen, initialStudentId]);
-
-  if (!isOpen) return null;
+  const allStudents = useMemo(
+    () => (isOpen ? storage.getStudents().filter(s => s.status === 'active') : []),
+    [isOpen]
+  );
 
   const handleSelectStudent = (st: Student) => {
     setSelectedStudent(st);
@@ -61,6 +47,36 @@ export const PaymentModal: React.FC<Props> = ({
     }
     setErrorMsg('');
   };
+
+  useEffect(() => {
+    if (!isOpen) {
+      setSearchTerm('');
+      setSelectedStudent(null);
+      setSelectedInvoiceId('');
+      setAmount(0);
+      setNote('');
+      setErrorMsg('');
+      return;
+    }
+
+    if (initialStudentId) {
+      const st = allStudents.find(s => s.id === initialStudentId);
+      if (st) handleSelectStudent(st);
+    }
+  }, [isOpen, initialStudentId, allStudents]);
+
+  const matchingStudents = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q || !isOpen) return [];
+    return allStudents.filter(
+      s =>
+        s.name.toLowerCase().includes(q) ||
+        s.code.toLowerCase().includes(q) ||
+        (s.parentPhone && s.parentPhone.includes(q))
+    );
+  }, [allStudents, searchTerm, isOpen]);
+
+  if (!isOpen) return null;
 
   const selectedInvoice = studentInvoices.find(i => i.id === selectedInvoiceId);
 
@@ -108,15 +124,6 @@ export const PaymentModal: React.FC<Props> = ({
       setErrorMsg(res.error || 'حدث خطأ أثناء تسجيل الدفعة.');
     }
   };
-
-  const matchingStudents = searchTerm.trim()
-    ? allStudents.filter(
-        s =>
-          s.name.includes(searchTerm) ||
-          s.code.includes(searchTerm) ||
-          s.parentPhone.includes(searchTerm)
-      )
-    : [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs">
@@ -167,28 +174,33 @@ export const PaymentModal: React.FC<Props> = ({
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               </div>
 
-              {searchTerm && matchingStudents.length === 0 && (
+              {searchTerm && matchingStudents.length === 0 ? (
                 <p className="text-xs text-slate-400 text-center py-4">لا يوجد طلاب مطابقين للبحث</p>
+              ) : (
+                <VirtualList
+                  items={matchingStudents}
+                  itemHeight={54}
+                  maxHeight={216}
+                  resetKey={searchTerm}
+                  className="divide-y divide-slate-100"
+                  renderItem={(st) => (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => handleSelectStudent(st)}
+                      className="w-full h-[54px] text-right px-2.5 rounded-xl hover:bg-blue-50/70 border border-transparent hover:border-blue-200 transition flex items-center justify-between text-xs"
+                    >
+                      <div className="min-w-0">
+                        <strong className="text-slate-900 block truncate">{st.name}</strong>
+                        <span className="text-slate-500 truncate block">{st.grade} - فصل {st.classNumber}</span>
+                      </div>
+                      <span className="font-mono bg-slate-100 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700 shrink-0">
+                        {st.code}
+                      </span>
+                    </button>
+                  )}
+                />
               )}
-
-              <div className="max-h-48 overflow-y-auto space-y-1.5 divide-y divide-slate-100">
-                {matchingStudents.map(st => (
-                  <button
-                    key={st.id}
-                    type="button"
-                    onClick={() => handleSelectStudent(st)}
-                    className="w-full pt-1.5 text-right p-2.5 rounded-xl hover:bg-blue-50/70 border border-transparent hover:border-blue-200 transition flex items-center justify-between text-xs"
-                  >
-                    <div>
-                      <strong className="text-slate-900 block">{st.name}</strong>
-                      <span className="text-slate-500">{st.grade} - فصل {st.classNumber}</span>
-                    </div>
-                    <span className="font-mono bg-slate-100 px-2 py-0.5 rounded text-[11px] font-semibold text-slate-700">
-                      {st.code}
-                    </span>
-                  </button>
-                ))}
-              </div>
             </div>
           ) : (
             /* Selected Student Box */

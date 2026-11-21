@@ -10,6 +10,12 @@ import {
 import * as XLSX from 'xlsx';
 import { storage } from '../../services/storage';
 import { formatArabicDate, getTodayDateString } from '../../utils/arabic';
+import { Student, SessionInstance, Group, Teacher } from '../../types';
+import {
+  SearchableVirtualSelect,
+  VirtualSelectOption,
+  useProgressiveCount
+} from '../common/VirtualList';
 
 type ReportType =
   | 'attendance'
@@ -34,11 +40,15 @@ export const ReportsView: React.FC = () => {
   const [dateTo, setDateTo] = useState<string>('');
   const [issuedAt, setIssuedAt] = useState<string | null>(null);
 
-  const [, setSyncTick] = useState(0);
+  const [syncTick, setSyncTick] = useState(0);
   useEffect(() => {
     const onCloudSync = () => setSyncTick(t => t + 1);
     window.addEventListener('nps_cloud_sync', onCloudSync);
-    return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
+    window.addEventListener('nps_settings_updated', onCloudSync);
+    return () => {
+      window.removeEventListener('nps_cloud_sync', onCloudSync);
+      window.removeEventListener('nps_settings_updated', onCloudSync);
+    };
   }, []);
 
   const students = storage.getStudents();
@@ -53,23 +63,66 @@ export const ReportsView: React.FC = () => {
 
   const todayStr = getTodayDateString();
 
+  // Pre-build O(1) lookup indices
+  const { studentById, sessionById, groupById, teacherById, teacherByName, parentById } = useMemo(() => {
+    const sMap = new Map<string, Student>();
+    for (let i = 0; i < students.length; i++) sMap.set(students[i].id, students[i]);
+
+    const sesMap = new Map<string, SessionInstance>();
+    for (let i = 0; i < sessions.length; i++) sesMap.set(sessions[i].id, sessions[i]);
+
+    const gMap = new Map<string, Group>();
+    for (let i = 0; i < groups.length; i++) gMap.set(groups[i].id, groups[i]);
+
+    const tById = new Map<string, Teacher>();
+    const tByName = new Map<string, Teacher>();
+    for (let i = 0; i < teachers.length; i++) {
+      tById.set(teachers[i].id, teachers[i]);
+      if (teachers[i].name) tByName.set(teachers[i].name, teachers[i]);
+    }
+
+    const pMap = new Map<string, (typeof parents)[number]>();
+    for (let i = 0; i < parents.length; i++) pMap.set(parents[i].id, parents[i]);
+
+    return {
+      studentById: sMap,
+      sessionById: sesMap,
+      groupById: gMap,
+      teacherById: tById,
+      teacherByName: tByName,
+      parentById: pMap
+    };
+  }, [students, sessions, groups, teachers, parents, syncTick]);
+
   // Collect available class numbers based on selected grade
   const availableClassNumbers = useMemo(() => {
     const nums = new Set<number>();
-    classes
-      .filter(c => !gradeFilter || c.grade === gradeFilter)
-      .forEach(c => nums.add(c.classNumber));
-    students
-      .filter(s => !gradeFilter || s.grade === gradeFilter)
-      .forEach(s => {
-        if (s.classNumber) nums.add(s.classNumber);
-      });
+    for (let i = 0; i < classes.length; i++) {
+      if (!gradeFilter || classes[i].grade === gradeFilter) nums.add(classes[i].classNumber);
+    }
+    for (let i = 0; i < students.length; i++) {
+      if ((!gradeFilter || students[i].grade === gradeFilter) && students[i].classNumber) {
+        nums.add(students[i].classNumber);
+      }
+    }
     return Array.from(nums).sort((a, b) => a - b);
   }, [classes, students, gradeFilter]);
 
   const selectedParentObj = useMemo(
-    () => (parentIdFilter ? parents.find(p => p.id === parentIdFilter) : undefined),
-    [parents, parentIdFilter]
+    () => (parentIdFilter ? parentById.get(parentIdFilter) : undefined),
+    [parentById, parentIdFilter]
+  );
+
+  // Parent options for virtualized searchable select (shows ALL parents smoothly)
+  const parentSelectOptions = useMemo<VirtualSelectOption[]>(
+    () =>
+      parents.map(p => ({
+        value: p.id,
+        label: p.displayName,
+        subLabel: p.phone,
+        searchText: `${p.displayName} ${p.phone || ''}`
+      })),
+    [parents]
   );
 
   // Students eligible for dropdown based on parent, grade, class, and search query
@@ -96,8 +149,19 @@ export const ReportsView: React.FC = () => {
   }, [students, parentIdFilter, selectedParentObj, gradeFilter, classFilter, studentSearch]);
 
   const selectedStudentObj = useMemo(
-    () => (studentIdFilter ? students.find(s => s.id === studentIdFilter) : undefined),
-    [students, studentIdFilter]
+    () => (studentIdFilter ? studentById.get(studentIdFilter) : undefined),
+    [studentById, studentIdFilter]
+  );
+
+  const studentSelectOptions = useMemo<VirtualSelectOption[]>(
+    () =>
+      selectableStudents.map(st => ({
+        value: st.id,
+        label: st.name,
+        subLabel: st.code,
+        searchText: `${st.name} ${st.code} ${st.parentPhone || ''}`
+      })),
+    [selectableStudents]
   );
 
   // Reset dependent filters cleanly
@@ -129,96 +193,149 @@ export const ReportsView: React.FC = () => {
     setIssuedAt(null);
   };
 
-  // Filtered Attendance Records
-  const filteredAttendance = useMemo(() => {
+  // Filtered Attendance Records (O(Attendance) using Map lookups)
+  const { filteredAttendance, totalPresentInFiltered, totalAbsentInFiltered } = useMemo(() => {
     const q = studentSearch.trim().toLowerCase();
-    return attendance
-      .map(a => {
-        const st = students.find(s => s.id === a.studentId);
-        const ses = sessions.find(s => s.id === a.sessionId);
-        const grp = ses ? groups.find(g => g.id === ses.groupId) : null;
-        const tch = teachers.find(t => t.id === grp?.teacherId || t.name === a.recordedBy);
-        const recordDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
-        const subjectDisplay = a.subjectName || grp?.subject || tch?.subject || a.sessionLabel || '-';
-        return { a, st, ses, grp, recordDate, subjectDisplay };
-      })
-      .filter(({ a, st, recordDate }) => {
-        if (statusFilter !== 'all' && a.status !== statusFilter) return false;
-        if (parentIdFilter) {
-          const matchesParent =
-            st?.parentId === parentIdFilter ||
-            (selectedParentObj?.phone && st?.parentPhone === selectedParentObj.phone);
-          if (!matchesParent) return false;
-        }
-        if (gradeFilter && st?.grade !== gradeFilter) return false;
-        if (classFilter && String(st?.classNumber ?? '') !== classFilter) return false;
-        if (studentIdFilter && a.studentId !== studentIdFilter) return false;
-        if (!studentIdFilter && q) {
-          const matchesSearch =
-            st?.name.toLowerCase().includes(q) ||
-            st?.code.toLowerCase().includes(q);
-          if (!matchesSearch) return false;
-        }
-        if (dateFrom && recordDate < dateFrom) return false;
-        if (dateTo && recordDate > dateTo) return false;
-        return true;
-      })
-      .sort((x, y) => {
-        const dateCmp = y.recordDate.localeCompare(x.recordDate);
-        if (dateCmp !== 0) return dateCmp;
-        return x.a.recordedAt.localeCompare(y.a.recordedAt);
-      });
-  }, [attendance, students, sessions, groups, teachers, statusFilter, parentIdFilter, selectedParentObj, gradeFilter, classFilter, studentIdFilter, studentSearch, dateFrom, dateTo]);
+    const result: {
+      a: (typeof attendance)[number];
+      st: Student | undefined;
+      ses: SessionInstance | undefined;
+      grp: Group | null | undefined;
+      recordDate: string;
+      subjectDisplay: string;
+    }[] = [];
+    let presentCount = 0;
+    let absentCount = 0;
+
+    for (let i = 0; i < attendance.length; i++) {
+      const a = attendance[i];
+      if (statusFilter !== 'all' && a.status !== statusFilter) continue;
+
+      const st = studentById.get(a.studentId);
+      if (parentIdFilter) {
+        const matchesParent =
+          st?.parentId === parentIdFilter ||
+          (selectedParentObj?.phone && st?.parentPhone === selectedParentObj.phone);
+        if (!matchesParent) continue;
+      }
+      if (gradeFilter && st?.grade !== gradeFilter) continue;
+      if (classFilter && String(st?.classNumber ?? '') !== classFilter) continue;
+      if (studentIdFilter && a.studentId !== studentIdFilter) continue;
+      if (!studentIdFilter && q) {
+        const matchesSearch =
+          st?.name.toLowerCase().includes(q) ||
+          st?.code.toLowerCase().includes(q);
+        if (!matchesSearch) continue;
+      }
+
+      const ses = sessionById.get(a.sessionId);
+      const recordDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
+      if (dateFrom && recordDate < dateFrom) continue;
+      if (dateTo && recordDate > dateTo) continue;
+
+      const grp = ses ? groupById.get(ses.groupId) : null;
+      const tch = (grp?.teacherId ? teacherById.get(grp.teacherId) : undefined) || teacherByName.get(a.recordedBy);
+      const subjectDisplay = a.subjectName || grp?.subject || tch?.subject || a.sessionLabel || '-';
+
+      if (a.status === 'present') presentCount++;
+      else if (a.status === 'absent') absentCount++;
+
+      result.push({ a, st, ses, grp, recordDate, subjectDisplay });
+    }
+
+    result.sort((x, y) => {
+      const dateCmp = y.recordDate.localeCompare(x.recordDate);
+      if (dateCmp !== 0) return dateCmp;
+      return x.a.recordedAt.localeCompare(y.a.recordedAt);
+    });
+
+    return {
+      filteredAttendance: result,
+      totalPresentInFiltered: presentCount,
+      totalAbsentInFiltered: absentCount
+    };
+  }, [attendance, studentById, sessionById, groupById, teacherById, teacherByName, statusFilter, parentIdFilter, selectedParentObj, gradeFilter, classFilter, studentIdFilter, studentSearch, dateFrom, dateTo]);
 
   // Filtered Students (used by students report & chronic absence report)
-  const filteredStudents = useMemo(() => {
+  const { filteredStudents, gradeActiveCountMap } = useMemo(() => {
     const q = studentSearch.trim().toLowerCase();
-    return students.filter(st => {
+    const matched: Student[] = [];
+    const gCountMap = new Map<string, number>();
+
+    for (let i = 0; i < students.length; i++) {
+      const st = students[i];
       if (parentIdFilter) {
         const matchesParent =
           st.parentId === parentIdFilter ||
           (selectedParentObj?.phone && st.parentPhone === selectedParentObj.phone);
-        if (!matchesParent) return false;
+        if (!matchesParent) continue;
       }
-      if (gradeFilter && st.grade !== gradeFilter) return false;
-      if (classFilter && String(st.classNumber) !== classFilter) return false;
-      if (studentIdFilter && st.id !== studentIdFilter) return false;
+      if (gradeFilter && st.grade !== gradeFilter) continue;
+      if (classFilter && String(st.classNumber) !== classFilter) continue;
+      if (studentIdFilter && st.id !== studentIdFilter) continue;
       if (!studentIdFilter && q) {
-        return (
-          st.name.toLowerCase().includes(q) ||
-          st.code.toLowerCase().includes(q)
-        );
+        if (!st.name.toLowerCase().includes(q) && !st.code.toLowerCase().includes(q)) continue;
       }
-      return true;
-    });
+      matched.push(st);
+      if (st.status === 'active') {
+        gCountMap.set(st.grade, (gCountMap.get(st.grade) || 0) + 1);
+      }
+    }
+    return { filteredStudents: matched, gradeActiveCountMap: gCountMap };
   }, [students, parentIdFilter, selectedParentObj, gradeFilter, classFilter, studentIdFilter, studentSearch]);
 
-  // Chronic / Student Absence Summary Rows
+  // Chronic / Student Absence Summary Rows (Single pass over attendance + O(Students))
   const absenceSummaryRows = useMemo(() => {
-    return filteredStudents
-      .map(st => {
-        const stRecords = attendance.filter(a => {
-          if (a.studentId !== st.id) return false;
-          const ses = sessions.find(s => s.id === a.sessionId);
-          const recordDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
-          if (dateFrom && recordDate < dateFrom) return false;
-          if (dateTo && recordDate > dateTo) return false;
-          return true;
-        });
-        const absCount = stRecords.filter(a => a.status === 'absent').length;
-        const presCount = stRecords.filter(a => a.status === 'present').length;
-        const total = stRecords.length;
-        const absRate = total > 0 ? Math.round((absCount / total) * 100) : 0;
-        const exceedsThreshold = absCount >= settings.absenceThreshold;
-        return { st, absCount, presCount, total, absRate, exceedsThreshold };
-      })
-      .filter(row => {
-        if (statusFilter === 'absent') return row.absCount > 0;
-        if (statusFilter === 'present') return row.presCount > 0;
-        return true;
-      })
-      .sort((a, b) => b.absCount - a.absCount);
-  }, [filteredStudents, attendance, sessions, dateFrom, dateTo, settings.absenceThreshold, statusFilter]);
+    const countsByStudentId = new Map<string, { absCount: number; presCount: number }>();
+    for (let i = 0; i < attendance.length; i++) {
+      const a = attendance[i];
+      const ses = sessionById.get(a.sessionId);
+      const recordDate = a.sessionDate || ses?.date || a.recordedAt.substring(0, 10);
+      if (dateFrom && recordDate < dateFrom) continue;
+      if (dateTo && recordDate > dateTo) continue;
+
+      let entry = countsByStudentId.get(a.studentId);
+      if (!entry) {
+        entry = { absCount: 0, presCount: 0 };
+        countsByStudentId.set(a.studentId, entry);
+      }
+      if (a.status === 'absent') entry.absCount++;
+      else if (a.status === 'present') entry.presCount++;
+    }
+
+    const threshold = settings.absenceThreshold;
+    const rows: {
+      st: Student;
+      absCount: number;
+      presCount: number;
+      total: number;
+      absRate: number;
+      exceedsThreshold: boolean;
+    }[] = [];
+
+    for (let i = 0; i < filteredStudents.length; i++) {
+      const st = filteredStudents[i];
+      const entry = countsByStudentId.get(st.id);
+      const absCount = entry?.absCount || 0;
+      const presCount = entry?.presCount || 0;
+      if (statusFilter === 'absent' && absCount === 0) continue;
+      if (statusFilter === 'present' && presCount === 0) continue;
+
+      const total = absCount + presCount;
+      const absRate = total > 0 ? Math.round((absCount / total) * 100) : 0;
+      rows.push({
+        st,
+        absCount,
+        presCount,
+        total,
+        absRate,
+        exceedsThreshold: absCount >= threshold
+      });
+    }
+
+    rows.sort((a, b) => b.absCount - a.absCount);
+    return rows;
+  }, [filteredStudents, attendance, sessionById, dateFrom, dateTo, settings.absenceThreshold, statusFilter]);
 
   // Filtered Broadcasts
   const filteredBroadcasts = useMemo(() => {
@@ -231,6 +348,42 @@ export const ReportsView: React.FC = () => {
       return true;
     });
   }, [broadcasts, dateFrom, dateTo, gradeFilter, classFilter]);
+
+  // Teacher Performance Rows (O(Teachers + Groups + Sessions))
+  const teacherPerformanceRows = useMemo(() => {
+    const groupsCountByTeacher = new Map<string, number>();
+    const groupTeacherById = new Map<string, string>();
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
+      groupTeacherById.set(g.id, g.teacherId);
+      groupsCountByTeacher.set(g.teacherId, (groupsCountByTeacher.get(g.teacherId) || 0) + 1);
+    }
+
+    const sessionStatsByTeacher = new Map<string, { total: number; recorded: number }>();
+    for (let i = 0; i < sessions.length; i++) {
+      const s = sessions[i];
+      if (dateFrom && s.date < dateFrom) continue;
+      if (dateTo && s.date > dateTo) continue;
+      const teacherId = groupTeacherById.get(s.groupId);
+      if (!teacherId) continue;
+      let stat = sessionStatsByTeacher.get(teacherId);
+      if (!stat) {
+        stat = { total: 0, recorded: 0 };
+        sessionStatsByTeacher.set(teacherId, stat);
+      }
+      stat.total++;
+      if (s.status === 'recorded') stat.recorded++;
+    }
+
+    return teachers.map(tch => {
+      const groupsCount = groupsCountByTeacher.get(tch.id) || 0;
+      const stat = sessionStatsByTeacher.get(tch.id);
+      const totalSessions = stat?.total || 0;
+      const recordedCount = stat?.recorded || 0;
+      const rate = totalSessions > 0 ? Math.round((recordedCount / totalSessions) * 100) : 100;
+      return { tch, groupsCount, totalSessions, recordedCount, rate };
+    });
+  }, [teachers, groups, sessions, dateFrom, dateTo]);
 
   // Summary description of active filters for display inside the issued report
   const activeFilterSummary = useMemo(() => {
@@ -327,25 +480,14 @@ export const ReportsView: React.FC = () => {
       }));
     } else if (reportType === 'teachers_performance') {
       sheetName = 'أداء المعلمين';
-      data = teachers.map(tch => {
-        const tchGroups = groups.filter(g => g.teacherId === tch.id);
-        const tchSessions = sessions.filter(s => {
-          if (!tchGroups.some(g => g.id === s.groupId)) return false;
-          if (dateFrom && s.date < dateFrom) return false;
-          if (dateTo && s.date > dateTo) return false;
-          return true;
-        });
-        const recordedCount = tchSessions.filter(s => s.status === 'recorded').length;
-        const rate = tchSessions.length > 0 ? Math.round((recordedCount / tchSessions.length) * 100) : 100;
-        return {
-          'اسم المعلم': tch.name,
-          'المادة': tch.subject,
-          'المجموعات': tchGroups.length,
-          'إجمالي الحصص': tchSessions.length,
-          'الحصص المرصودة': recordedCount,
-          'نسبة الانضباط': `${rate}%`
-        };
-      });
+      data = teacherPerformanceRows.map(({ tch, groupsCount, totalSessions, recordedCount, rate }) => ({
+        'اسم المعلم': tch.name,
+        'المادة': tch.subject,
+        'المجموعات': groupsCount,
+        'إجمالي الحصص': totalSessions,
+        'الحصص المرصودة': recordedCount,
+        'نسبة الانضباط': `${rate}%`
+      }));
     }
 
     const wb = XLSX.utils.book_new();
@@ -354,8 +496,30 @@ export const ReportsView: React.FC = () => {
     XLSX.writeFile(wb, `NPS_${sheetName}_${todayStr}.xlsx`);
   };
 
-  const totalPresentInFiltered = filteredAttendance.filter(x => x.a.status === 'present').length;
-  const totalAbsentInFiltered = filteredAttendance.filter(x => x.a.status === 'absent').length;
+  // Seamless incremental rendering across all report tabs (zero 50-row cap)
+  const currentTotalRows =
+    reportType === 'attendance'
+      ? filteredAttendance.length
+      : reportType === 'chronic_absence'
+      ? absenceSummaryRows.length
+      : reportType === 'broadcasts'
+      ? filteredBroadcasts.length
+      : reportType === 'teachers_performance'
+      ? teacherPerformanceRows.length
+      : filteredStudents.length;
+
+  const { visibleCount, hasMore, sentinelRef } = useProgressiveCount(
+    currentTotalRows,
+    100,
+    150,
+    `${reportType}_${statusFilter}_${gradeFilter}_${classFilter}_${parentIdFilter}_${studentIdFilter}_${studentSearch}_${dateFrom}_${dateTo}`
+  );
+
+  const paginatedAttendance = filteredAttendance.slice(0, visibleCount);
+  const paginatedAbsenceSummary = absenceSummaryRows.slice(0, visibleCount);
+  const paginatedBroadcasts = filteredBroadcasts.slice(0, visibleCount);
+  const paginatedTeachersPerf = teacherPerformanceRows.slice(0, visibleCount);
+  const paginatedStudents = filteredStudents.slice(0, visibleCount);
 
   return (
     <div className="space-y-5">
@@ -509,18 +673,13 @@ export const ReportsView: React.FC = () => {
               <label className="block text-[11px] font-bold text-slate-600 mb-1">
                 ولي الأمر (تقرير ابن أو كل الأبناء)
               </label>
-              <select
+              <SearchableVirtualSelect
                 value={parentIdFilter}
-                onChange={(e) => handleParentChange(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white outline-hidden focus:border-[#1F4E8C]"
-              >
-                <option value="">كل أولياء الأمور ({parents.length})</option>
-                {parents.map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.displayName} ({p.phone})
-                  </option>
-                ))}
-              </select>
+                onChange={handleParentChange}
+                options={parentSelectOptions}
+                emptyOptionLabel={`كل أولياء الأمور (${parents.length})`}
+                searchPlaceholder="ابحث باسم ولي الأمر أو الهاتف..."
+              />
             </div>
           )}
 
@@ -539,25 +698,22 @@ export const ReportsView: React.FC = () => {
                       setStudentSearch(e.target.value);
                       setStudentIdFilter('');
                     }}
-                    placeholder="ابحث بالاسم/الكود..."
+                    placeholder="تصفية الجدول بالاسم/الكود..."
                     className="w-full pr-7 pl-2 py-2 text-xs rounded-xl border border-slate-300 outline-hidden focus:border-[#1F4E8C]"
                   />
                   <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-2.5" />
                 </div>
-                <select
-                  value={studentIdFilter}
-                  onChange={(e) => setStudentIdFilter(e.target.value)}
-                  className="w-1/2 px-2.5 py-2 text-xs rounded-xl border border-slate-300 bg-white outline-hidden focus:border-[#1F4E8C]"
-                >
-                  <option value="">
-                    {parentIdFilter ? `كل أبناء ولي الأمر (${selectableStudents.length})` : `كل الطلاب (${selectableStudents.length})`}
-                  </option>
-                  {selectableStudents.map(st => (
-                    <option key={st.id} value={st.id}>
-                      {st.name} ({st.code})
-                    </option>
-                  ))}
-                </select>
+                <div className="w-1/2">
+                  <SearchableVirtualSelect
+                    value={studentIdFilter}
+                    onChange={(val) => setStudentIdFilter(val)}
+                    options={studentSelectOptions}
+                    emptyOptionLabel={
+                      parentIdFilter ? `كل أبناء ولي الأمر (${selectableStudents.length})` : `كل الطلاب (${selectableStudents.length})`
+                    }
+                    searchPlaceholder="اختر طالباً بالاسم أو الكود..."
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -682,14 +838,14 @@ export const ReportsView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredAttendance.length === 0 ? (
+                  {paginatedAttendance.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="text-center py-8 text-slate-400">
                         لا توجد سجلات تطابق الفلاتر المحددة
                       </td>
                     </tr>
                   ) : (
-                    filteredAttendance.map(({ a, st, recordDate, subjectDisplay }) => (
+                    paginatedAttendance.map(({ a, st, recordDate, subjectDisplay }) => (
                       <tr key={a.id} className="hover:bg-slate-50">
                         <td className="p-2.5 font-bold text-slate-900">{st?.name || 'غير معروف'}</td>
                         <td className="p-2.5 font-mono text-slate-600">{st?.code || '-'}</td>
@@ -747,14 +903,14 @@ export const ReportsView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {absenceSummaryRows.length === 0 ? (
+                  {paginatedAbsenceSummary.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="text-center py-8 text-slate-400">
                         لا توجد بيانات تطابق الفلاتر المحددة
                       </td>
                     </tr>
                   ) : (
-                    absenceSummaryRows.map(({ st, absCount, presCount, total, absRate, exceedsThreshold }) => (
+                    paginatedAbsenceSummary.map(({ st, absCount, presCount, total, absRate, exceedsThreshold }) => (
                       <tr key={st.id} className={exceedsThreshold ? 'bg-rose-50/50' : ''}>
                         <td className="p-2.5 font-bold text-slate-900">{st.name}</td>
                         <td className="p-2.5 font-mono text-slate-600">{st.code}</td>
@@ -798,14 +954,14 @@ export const ReportsView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredBroadcasts.length === 0 ? (
+                  {paginatedBroadcasts.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="text-center py-8 text-slate-400">
                         لا توجد إشعارات تطابق الفلاتر المحددة
                       </td>
                     </tr>
                   ) : (
-                    filteredBroadcasts.map(b => (
+                    paginatedBroadcasts.map(b => (
                       <tr key={b.id} className="hover:bg-slate-50">
                         <td className="p-2.5 font-bold text-slate-900">{b.title}</td>
                         <td className="p-2.5">
@@ -852,32 +1008,20 @@ export const ReportsView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {teachers.map(tch => {
-                    const tchGroups = groups.filter(g => g.teacherId === tch.id);
-                    const tchSessions = sessions.filter(s => {
-                      if (!tchGroups.some(g => g.id === s.groupId)) return false;
-                      if (dateFrom && s.date < dateFrom) return false;
-                      if (dateTo && s.date > dateTo) return false;
-                      return true;
-                    });
-                    const recordedCount = tchSessions.filter(s => s.status === 'recorded').length;
-                    const rate = tchSessions.length > 0 ? Math.round((recordedCount / tchSessions.length) * 100) : 100;
-
-                    return (
-                      <tr key={tch.id}>
-                        <td className="p-2.5 font-bold text-slate-900">{tch.name}</td>
-                        <td className="p-2.5 text-slate-600">{tch.subject}</td>
-                        <td className="p-2.5">{tchGroups.length} مجموعة</td>
-                        <td className="p-2.5">{tchSessions.length}</td>
-                        <td className="p-2.5 font-bold text-emerald-700">{recordedCount}</td>
-                        <td className="p-2.5">
-                          <span className={`px-2 py-0.5 rounded-full font-bold text-xs ${rate >= 90 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                            {rate}%
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {paginatedTeachersPerf.map(({ tch, groupsCount, totalSessions, recordedCount, rate }) => (
+                    <tr key={tch.id}>
+                      <td className="p-2.5 font-bold text-slate-900">{tch.name}</td>
+                      <td className="p-2.5 text-slate-600">{tch.subject}</td>
+                      <td className="p-2.5">{groupsCount} مجموعة</td>
+                      <td className="p-2.5">{totalSessions}</td>
+                      <td className="p-2.5 font-bold text-emerald-700">{recordedCount}</td>
+                      <td className="p-2.5">
+                        <span className={`px-2 py-0.5 rounded-full font-bold text-xs ${rate >= 90 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                          {rate}%
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -892,7 +1036,7 @@ export const ReportsView: React.FC = () => {
               {settings.grades
                 .filter(g => !gradeFilter || g === gradeFilter)
                 .map((gradeName, i) => {
-                  const count = filteredStudents.filter(s => s.grade === gradeName && s.status === 'active').length;
+                  const count = gradeActiveCountMap.get(gradeName) || 0;
                   return (
                     <div key={i} className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
                       <span className="text-xs text-slate-500 block mb-1">{gradeName}</span>
@@ -914,14 +1058,14 @@ export const ReportsView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredStudents.length === 0 ? (
+                  {paginatedStudents.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="text-center py-8 text-slate-400">
                         لا يوجد طلاب يطابقون الفلاتر المحددة
                       </td>
                     </tr>
                   ) : (
-                    filteredStudents.map(st => (
+                    paginatedStudents.map(st => (
                       <tr key={st.id} className="hover:bg-slate-50">
                         <td className="p-2.5 font-bold text-slate-900">{st.name}</td>
                         <td className="p-2.5 font-mono text-slate-600">{st.code}</td>
@@ -934,6 +1078,13 @@ export const ReportsView: React.FC = () => {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {/* Seamless Scroll Auto-Loader for Full Results */}
+        {hasMore && (
+          <div ref={sentinelRef} className="pt-3 text-center text-xs text-slate-400 no-print">
+            جاري تحميل المزيد من النتائج ({visibleCount} / {currentTotalRows})...
           </div>
         )}
       </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LogOut, Bell, Key, RefreshCw, Search, Settings } from 'lucide-react';
 import { User } from '../../types';
 import { storage } from '../../services/storage';
@@ -6,6 +6,7 @@ import { NotificationCenterModal } from './NotificationCenterModal';
 import { ChangePasswordModal } from './ChangePasswordModal';
 import { ParentSettingsModal } from '../parent/ParentSettingsModal';
 import { PWAInstallButton } from './PWAInstallButton';
+import { VirtualList } from './VirtualList';
 
 interface Props {
   currentUser: User;
@@ -28,40 +29,68 @@ export const Header: React.FC<Props> = ({
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
   const [switchSearch, setSwitchSearch] = useState('');
   const [schoolSettings, setSchoolSettings] = useState(() => storage.getSettings());
+  const [syncTick, setSyncTick] = useState(0);
+  const switchMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const handleSettingsUpdate = () => {
       setSchoolSettings(storage.getSettings());
     };
+    const handleDataSync = () => setSyncTick(t => t + 1);
     window.addEventListener('nps_settings_updated', handleSettingsUpdate);
-    return () => window.removeEventListener('nps_settings_updated', handleSettingsUpdate);
+    window.addEventListener('nps_cloud_sync', handleDataSync);
+    return () => {
+      window.removeEventListener('nps_settings_updated', handleSettingsUpdate);
+      window.removeEventListener('nps_cloud_sync', handleDataSync);
+    };
   }, []);
 
-  const notifications = storage.getNotifications();
-  const parentPref =
-    currentUser.role === 'parent'
-      ? storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone)
-      : 'both';
-  const seenUnreadKeys = new Set<string>();
-  const unreadCount =
-    currentUser.role === 'owner'
-      ? 0
-      : notifications.filter(n => {
-          if (n.isRead) return false;
-          if (currentUser.role === 'parent' && !storage.shouldDeliverAttendanceNotif(parentPref, n.type)) {
-            return false;
-          }
-          const matchesRole = n.recipientUserId
-            ? n.recipientUserId === currentUser.id
-            : currentUser.role === 'parent' || currentUser.role === 'teacher'
-            ? n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === currentUser.role)
-            : n.recipientRole === currentUser.role;
-          if (!matchesRole) return false;
-          const key = `${n.title}|${n.body}|${(n.createdAt || '').substring(0, 16)}`;
-          if (seenUnreadKeys.has(key)) return false;
-          seenUnreadKeys.add(key);
-          return true;
-        }).length;
+  useEffect(() => {
+    if (!showSwitchMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (switchMenuRef.current && !switchMenuRef.current.contains(e.target as Node)) {
+        setShowSwitchMenu(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowSwitchMenu(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [showSwitchMenu]);
+
+  const unreadCount = useMemo(() => {
+    if (currentUser.role === 'owner') return 0;
+    const notifications = storage.getNotifications();
+    const parentPref =
+      currentUser.role === 'parent'
+        ? storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone)
+        : 'both';
+    const seenUnreadKeys = new Set<string>();
+    let count = 0;
+    for (let i = 0; i < notifications.length; i++) {
+      const n = notifications[i];
+      if (n.isRead) continue;
+      if (currentUser.role === 'parent' && !storage.shouldDeliverAttendanceNotif(parentPref, n.type)) {
+        continue;
+      }
+      const matchesRole = n.recipientUserId
+        ? n.recipientUserId === currentUser.id
+        : currentUser.role === 'parent' || currentUser.role === 'teacher'
+        ? n.recipientPhone === currentUser.phone || (!n.recipientPhone && n.recipientRole === currentUser.role)
+        : n.recipientRole === currentUser.role;
+      if (!matchesRole) continue;
+      const key = `${n.title}|${n.body}|${(n.createdAt || '').substring(0, 16)}`;
+      if (seenUnreadKeys.has(key)) continue;
+      seenUnreadKeys.add(key);
+      count++;
+    }
+    return count;
+  }, [currentUser, syncTick, showNotifications]);
 
   const roleLabels: Record<string, { label: string; bg: string; text: string }> = {
     owner: { label: 'المالك / الإدارة', bg: 'bg-indigo-100', text: 'text-indigo-800' },
@@ -69,21 +98,24 @@ export const Header: React.FC<Props> = ({
     parent: { label: 'ولي أمر', bg: 'bg-amber-100', text: 'text-amber-800' }
   };
 
-  const teachersList = storage.getTeachers();
-  const parentsList = storage.getParents();
-  const matchedTeacher =
-    currentUser.role === 'teacher'
-      ? teachersList.find(t => t.userId === currentUser.id || t.id === currentUser.relatedId)
-      : undefined;
-  const matchedParent =
-    currentUser.role === 'parent'
-      ? parentsList.find(
-          p =>
-            p.userId === currentUser.id ||
-            p.id === currentUser.relatedId ||
-            (currentUser.phone && p.phone === currentUser.phone)
-        )
-      : undefined;
+  const { matchedTeacher, matchedParent } = useMemo(() => {
+    const teachersList = currentUser.role === 'teacher' ? storage.getTeachers() : [];
+    const parentsList = currentUser.role === 'parent' ? storage.getParents() : [];
+    const tMatch =
+      currentUser.role === 'teacher'
+        ? teachersList.find(t => t.userId === currentUser.id || t.id === currentUser.relatedId)
+        : undefined;
+    const pMatch =
+      currentUser.role === 'parent'
+        ? parentsList.find(
+            p =>
+              p.userId === currentUser.id ||
+              p.id === currentUser.relatedId ||
+              (currentUser.phone && p.phone === currentUser.phone)
+          )
+        : undefined;
+    return { matchedTeacher: tMatch, matchedParent: pMatch };
+  }, [currentUser, syncTick]);
 
   const resolvedDisplayName =
     currentUser.role === 'owner'
@@ -93,7 +125,30 @@ export const Header: React.FC<Props> = ({
       : matchedParent?.displayName || currentUser.displayName || currentUser.username;
 
   const currentRoleInfo = roleLabels[currentUser.role] || roleLabels.owner;
-  const allUsers = storage.getUsers().filter(u => u.role !== 'secretary');
+
+  const allSwitchableUsers = useMemo(() => {
+    if (!onSwitchUser) return [];
+    return storage.getUsers().filter(u => u.role !== 'secretary');
+  }, [onSwitchUser, syncTick, showSwitchMenu]);
+
+  const matchedSwitchUsers = useMemo(() => {
+    if (!showSwitchMenu) return [] as User[];
+    const q = switchSearch.trim().toLowerCase();
+    if (!q) return allSwitchableUsers;
+    const matched: User[] = [];
+    for (let i = 0; i < allSwitchableUsers.length; i++) {
+      const u = allSwitchableUsers[i];
+      const name = (u.displayName || (u.role === 'owner' ? 'الادمن' : u.username)).toLowerCase();
+      if (
+        name.includes(q) ||
+        u.username.toLowerCase().includes(q) ||
+        (u.phone && u.phone.includes(q))
+      ) {
+        matched.push(u);
+      }
+    }
+    return matched;
+  }, [showSwitchMenu, allSwitchableUsers, switchSearch]);
 
   return (
     <>
@@ -149,7 +204,7 @@ export const Header: React.FC<Props> = ({
 
               {/* Quick switch role dropdown - visible ONLY when logged in as Admin/Owner */}
               {onSwitchUser && (
-                <div className="relative">
+                <div className="relative" ref={switchMenuRef}>
                   <button
                     onClick={() => setShowSwitchMenu(!showSwitchMenu)}
                     className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 transition-colors"
@@ -162,7 +217,7 @@ export const Header: React.FC<Props> = ({
                   {showSwitchMenu && (
                     <div className="absolute left-0 mt-2 w-72 bg-white rounded-xl shadow-xl border border-slate-200 py-2 z-50 text-right">
                       <p className="px-3 py-1 text-[11px] font-bold text-slate-400 border-b border-slate-100">
-                        التنقل السريع بين الحسابات:
+                        التنقل السريع بين الحسابات ({allSwitchableUsers.length}):
                       </p>
                       <div className="px-2.5 py-2 border-b border-slate-100">
                         <div className="relative">
@@ -177,38 +232,36 @@ export const Header: React.FC<Props> = ({
                           <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-2" />
                         </div>
                       </div>
-                      <div className="max-h-60 overflow-y-auto">
-                        {allUsers
-                          .filter(u => {
-                            const name = (u.displayName || (u.role === 'owner' ? 'الادمن' : u.username)).toLowerCase();
-                            const q = switchSearch.trim().toLowerCase();
-                            if (!q) return true;
-                            return (
-                              name.includes(q) ||
-                              u.username.toLowerCase().includes(q) ||
-                              (u.phone && u.phone.includes(q))
-                            );
-                          })
-                          .map((u, idx) => {
-                            const dispName = u.displayName || (u.role === 'owner' ? 'الادمن' : u.username);
-                            return (
-                              <button
-                                key={`${u.id}_${idx}`}
-                                onClick={() => {
-                                  setShowSwitchMenu(false);
-                                  setSwitchSearch('');
-                                  onSwitchUser(u);
-                                }}
-                                className="w-full px-3 py-2 text-xs flex items-center justify-between gap-2 hover:bg-slate-50 transition-colors text-right"
-                              >
-                                <span className="font-semibold text-slate-800 leading-snug text-right">{dispName}</span>
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
-                                  {roleLabels[u.role]?.label || u.role}
-                                </span>
-                              </button>
-                            );
-                          })}
-                      </div>
+                      <VirtualList
+                        items={matchedSwitchUsers}
+                        itemHeight={36}
+                        maxHeight={240}
+                        resetKey={switchSearch}
+                        emptyState={
+                          <p className="px-3 py-4 text-center text-xs text-slate-400">
+                            لا توجد حسابات مطابقة للبحث
+                          </p>
+                        }
+                        renderItem={(u, idx) => {
+                          const dispName = u.displayName || (u.role === 'owner' ? 'الادمن' : u.username);
+                          return (
+                            <button
+                              key={`${u.id}_${idx}`}
+                              onClick={() => {
+                                setShowSwitchMenu(false);
+                                setSwitchSearch('');
+                                onSwitchUser(u);
+                              }}
+                              className="w-full h-[36px] px-3 text-xs flex items-center justify-between gap-2 hover:bg-slate-50 transition-colors text-right"
+                            >
+                              <span className="font-semibold text-slate-800 leading-snug text-right truncate">{dispName}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
+                                {roleLabels[u.role]?.label || u.role}
+                              </span>
+                            </button>
+                          );
+                        }}
+                      />
                     </div>
                   )}
                 </div>

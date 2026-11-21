@@ -1,11 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Users, Bell, CheckCircle2, XCircle, Calendar, Clock, Sparkles, MapPin, BookOpen, Settings, FileText } from 'lucide-react';
-import { User as UserType, Student } from '../../types';
+import {
+  User as UserType,
+  Student,
+  AttendanceRecord,
+  SessionInstance,
+  Group,
+  Teacher
+} from '../../types';
 import { storage } from '../../services/storage';
 import { formatArabicDate, formatArabicTime, getTodayDateString } from '../../utils/arabic';
 import { ChangePasswordModal } from '../common/ChangePasswordModal';
 import { ParentSettingsContent } from './ParentSettingsModal';
 import { ParentReportsView } from './ParentReportsView';
+import { useProgressiveCount } from '../common/VirtualList';
 
 interface Props {
   currentUser: UserType;
@@ -23,7 +31,7 @@ export const ParentDashboard: React.FC<Props> = ({
   const [selectedChildId, setSelectedChildId] = useState<string>('all');
   const [showWelcomeModal, setShowWelcomeModal] = useState(false);
   const [showChangePass, setShowChangePass] = useState(false);
-  const [, setSyncTick] = useState(0);
+  const [syncTick, setSyncTick] = useState(0);
 
   const todayStr = getTodayDateString();
 
@@ -54,61 +62,158 @@ export const ParentDashboard: React.FC<Props> = ({
     return () => window.removeEventListener('nps_cloud_sync', onCloudSync);
   }, [currentUser, selectedStudentId]);
 
-  // Data helpers
-  const attendanceRecords = storage.getAttendanceRecords();
-  const sessions = storage.getSessions();
-  const groups = storage.getGroups();
-  const teachers = storage.getTeachers();
-  const tutoringGroups = storage.getTutoringGroups();
-  const parentPref = storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone);
-  const notifications = storage.getNotifications().filter(n => {
-    if (!storage.shouldDeliverAttendanceNotif(parentPref, n.type)) return false;
-    return n.recipientUserId
-      ? n.recipientUserId === currentUser.id
-      : n.recipientPhone === currentUser.phone;
-  });
+  const {
+    attendanceRecords,
+    sessions,
+    groups,
+    teachers,
+    tutoringGroups,
+    sessionById,
+    groupById,
+    teacherById,
+    teacherByName,
+    notifications,
+    hasUnreadNotifications,
+    recordsByStudentId,
+    statsByStudentId,
+    resolvedParentName
+  } = useMemo(() => {
+    const attRecs = storage.getAttendanceRecords();
+    const sesList = storage.getSessions();
+    const grpList = storage.getGroups();
+    const tchList = storage.getTeachers();
+    const tutList = storage.getTutoringGroups();
+    const parentPref = storage.getParentNotificationPref(currentUser.relatedId, currentUser.phone);
+    const allNotifs = storage.getNotifications();
 
-  // Calculate monthly stats for a child
-  const getChildMonthlyStats = (studentId: string) => {
-    const studentRecords = attendanceRecords.filter(a => a.studentId === studentId);
-    const total = studentRecords.length;
-    const present = studentRecords.filter(a => a.status === 'present').length;
-    const absent = studentRecords.filter(a => a.status === 'absent').length;
-    const rate = total > 0 ? Math.round((present / total) * 100) : 100;
-
-    // Today's status (PRT-01)
-    const todaySessions = sessions.filter(s => s.date === todayStr);
-    const todayRecord = studentRecords.find(a => todaySessions.some(ts => ts.id === a.sessionId));
-    let todayStatus: 'present' | 'absent' | 'none' = 'none';
-    if (todayRecord) {
-      todayStatus = todayRecord.status === 'present' ? 'present' : 'absent';
+    const sMap = new Map<string, SessionInstance>();
+    const todaySessionIdSet = new Set<string>();
+    for (let i = 0; i < sesList.length; i++) {
+      const s = sesList[i];
+      sMap.set(s.id, s);
+      if (s.date === todayStr) todaySessionIdSet.add(s.id);
     }
 
-    return { total, present, absent, rate, todayStatus };
-  };
+    const gMap = new Map<string, Group>();
+    for (let i = 0; i < grpList.length; i++) gMap.set(grpList[i].id, grpList[i]);
 
-  const displayedChildren = selectedChildId === 'all'
-    ? children
-    : children.filter(c => c.id === selectedChildId);
+    const tIdMap = new Map<string, Teacher>();
+    const tNameMap = new Map<string, Teacher>();
+    for (let i = 0; i < tchList.length; i++) {
+      tIdMap.set(tchList[i].id, tchList[i]);
+      tNameMap.set(tchList[i].name, tchList[i]);
+    }
 
-  const parentTutoringGroups = tutoringGroups
-    .filter(tg => tg.studentIds.some(id => displayedChildren.some(c => c.id === id)))
-    .sort((a, b) => {
-      const cmp = b.date.localeCompare(a.date);
-      return cmp !== 0 ? cmp : b.startTime.localeCompare(a.startTime);
+    const childIdSet = new Set(children.map(c => c.id));
+    const recMap = new Map<string, AttendanceRecord[]>();
+    const stStatsMap = new Map<
+      string,
+      { total: number; present: number; absent: number; rate: number; todayStatus: 'present' | 'absent' | 'none' }
+    >();
+
+    for (let i = 0; i < children.length; i++) {
+      recMap.set(children[i].id, []);
+      stStatsMap.set(children[i].id, { total: 0, present: 0, absent: 0, rate: 100, todayStatus: 'none' });
+    }
+
+    for (let i = 0; i < attRecs.length; i++) {
+      const a = attRecs[i];
+      if (!childIdSet.has(a.studentId)) continue;
+      recMap.get(a.studentId)!.push(a);
+      const st = stStatsMap.get(a.studentId)!;
+      st.total++;
+      if (a.status === 'present') st.present++;
+      else if (a.status === 'absent') st.absent++;
+      if (st.todayStatus === 'none' && todaySessionIdSet.has(a.sessionId)) {
+        st.todayStatus = a.status === 'present' ? 'present' : 'absent';
+      }
+    }
+
+    recMap.forEach((recs, studentId) => {
+      recs.sort((a, b) => {
+        const dateA = a.sessionDate || a.recordedAt.substring(0, 10);
+        const dateB = b.sessionDate || b.recordedAt.substring(0, 10);
+        const dateCmp = dateB.localeCompare(dateA);
+        if (dateCmp !== 0) return dateCmp;
+        return a.recordedAt.localeCompare(b.recordedAt);
+      });
+      const st = stStatsMap.get(studentId)!;
+      st.rate = st.total > 0 ? Math.round((st.present / st.total) * 100) : 100;
     });
 
-  const upcomingTutoringCount = tutoringGroups.filter(
-    tg => tg.date >= todayStr && tg.studentIds.some(id => children.some(c => c.id === id))
-  ).length;
+    const filteredNotifs = allNotifs.filter(n => {
+      if (!storage.shouldDeliverAttendanceNotif(parentPref, n.type)) return false;
+      return n.recipientUserId ? n.recipientUserId === currentUser.id : n.recipientPhone === currentUser.phone;
+    });
+    const hasUnread = filteredNotifs.some(n => !n.isRead);
 
-  const matchedParent = storage.getParents().find(
-    p =>
-      p.userId === currentUser.id ||
-      p.id === currentUser.relatedId ||
-      (currentUser.phone && p.phone === currentUser.phone)
+    const matchedParent = storage.getParents().find(
+      p =>
+        p.userId === currentUser.id ||
+        p.id === currentUser.relatedId ||
+        (currentUser.phone && p.phone === currentUser.phone)
+    );
+    const parentName = matchedParent?.displayName || currentUser.displayName || currentUser.username;
+
+    return {
+      attendanceRecords: attRecs,
+      sessions: sesList,
+      groups: grpList,
+      teachers: tchList,
+      tutoringGroups: tutList,
+      sessionById: sMap,
+      groupById: gMap,
+      teacherById: tIdMap,
+      teacherByName: tNameMap,
+      notifications: filteredNotifs,
+      hasUnreadNotifications: hasUnread,
+      recordsByStudentId: recMap,
+      statsByStudentId: stStatsMap,
+      resolvedParentName: parentName
+    };
+  }, [syncTick, currentUser, children, todayStr]);
+
+  const displayedChildren = useMemo(
+    () => (selectedChildId === 'all' ? children : children.filter(c => c.id === selectedChildId)),
+    [children, selectedChildId]
   );
-  const resolvedParentName = matchedParent?.displayName || currentUser.displayName || currentUser.username;
+
+  const { parentTutoringGroups, upcomingTutoringCount } = useMemo(() => {
+    const displayedIds = new Set(displayedChildren.map(c => c.id));
+    const allChildIds = new Set(children.map(c => c.id));
+    const matching = tutoringGroups
+      .filter(tg => tg.studentIds.some(id => displayedIds.has(id)))
+      .sort((a, b) => {
+        const cmp = b.date.localeCompare(a.date);
+        return cmp !== 0 ? cmp : b.startTime.localeCompare(a.startTime);
+      });
+    let upcoming = 0;
+    for (let i = 0; i < tutoringGroups.length; i++) {
+      const tg = tutoringGroups[i];
+      if (tg.date >= todayStr && tg.studentIds.some(id => allChildIds.has(id))) {
+        upcoming++;
+      }
+    }
+    return { parentTutoringGroups: matching, upcomingTutoringCount: upcoming };
+  }, [tutoringGroups, displayedChildren, children, todayStr]);
+
+  const { visibleCount: visibleNotifsCount, hasMore: hasMoreNotifs, sentinelRef: notifsSentinelRef } =
+    useProgressiveCount(notifications.length, 60, 100, activeNav === 'notifications' ? syncTick : 'other');
+
+  const maxChildRecordsLength = useMemo(() => {
+    let max = 0;
+    for (let i = 0; i < displayedChildren.length; i++) {
+      const len = (recordsByStudentId.get(displayedChildren[i].id) || []).length;
+      if (len > max) max = len;
+    }
+    return max;
+  }, [displayedChildren, recordsByStudentId]);
+
+  const {
+    visibleCount: visibleChildRecsCount,
+    hasMore: hasMoreChildRecs,
+    sentinelRef: childRecsSentinelRef
+  } = useProgressiveCount(maxChildRecordsLength, 60, 100, `${selectedChildId}_${syncTick}`);
 
   return (
     <div className="max-w-4xl mx-auto px-3 sm:px-6 py-6 pb-24 space-y-6">
@@ -163,17 +268,15 @@ export const ParentDashboard: React.FC<Props> = ({
       {activeNav === 'children' && (
         <div className="space-y-6">
           {displayedChildren.map(child => {
-            const stats = getChildMonthlyStats(child.id);
-            const childRecords = attendanceRecords
-              .filter(a => a.studentId === child.id)
-              .slice()
-              .sort((a, b) => {
-                const dateA = a.sessionDate || a.recordedAt.substring(0, 10);
-                const dateB = b.sessionDate || b.recordedAt.substring(0, 10);
-                const dateCmp = dateB.localeCompare(dateA);
-                if (dateCmp !== 0) return dateCmp;
-                return a.recordedAt.localeCompare(b.recordedAt);
-              });
+            const stats = statsByStudentId.get(child.id) || {
+              total: 0,
+              present: 0,
+              absent: 0,
+              rate: 100,
+              todayStatus: 'none' as const
+            };
+            const childRecords = recordsByStudentId.get(child.id) || [];
+            const visibleChildRecords = childRecords.slice(0, visibleChildRecsCount);
 
             return (
               <div key={child.id} className="bg-white rounded-3xl shadow-md shadow-slate-200/60 border border-slate-200/80 overflow-hidden">
@@ -233,10 +336,10 @@ export const ParentDashboard: React.FC<Props> = ({
                     </p>
                   ) : (
                     <div className="space-y-2.5">
-                      {childRecords.map((rec, idx) => {
-                        const session = sessions.find(s => s.id === rec.sessionId);
-                        const grp = session ? groups.find(g => g.id === session.groupId) : null;
-                        const tch = teachers.find(t => t.id === grp?.teacherId || t.name === rec.recordedBy);
+                      {visibleChildRecords.map((rec, idx) => {
+                        const session = sessionById.get(rec.sessionId);
+                        const grp = session ? groupById.get(session.groupId) : undefined;
+                        const tch = (grp ? teacherById.get(grp.teacherId) : undefined) || teacherByName.get(rec.recordedBy);
                         const isPres = rec.status === 'present';
                         const subjectTitle = rec.subjectName || grp?.subject || tch?.subject || 'حصة دراسية';
                         const sessionSubLabel = rec.sessionLabel || grp?.name;
@@ -304,6 +407,11 @@ export const ParentDashboard: React.FC<Props> = ({
               </div>
             );
           })}
+          {hasMoreChildRecs && (
+            <div ref={childRecsSentinelRef} className="py-2 text-center text-xs text-slate-400">
+              جاري عرض باقي الحصص...
+            </div>
+          )}
         </div>
       )}
 
@@ -334,8 +442,9 @@ export const ParentDashboard: React.FC<Props> = ({
           ) : (
             <div className="space-y-3.5">
               {parentTutoringGroups.map(tg => {
-                const tch = teachers.find(t => t.id === tg.teacherId);
-                const enrolledKids = displayedChildren.filter(c => tg.studentIds.includes(c.id));
+                const tch = teacherById.get(tg.teacherId);
+                const tgStudentSet = new Set(tg.studentIds);
+                const enrolledKids = displayedChildren.filter(c => tgStudentSet.has(c.id));
                 const isToday = tg.date === todayStr;
                 const isUpcoming = tg.date > todayStr;
 
@@ -457,36 +566,43 @@ export const ParentDashboard: React.FC<Props> = ({
             {notifications.length === 0 ? (
               <p className="text-xs text-slate-400 text-center py-8">لا توجد إشعارات سابقة</p>
             ) : (
-              notifications.map(n => (
-                <div
-                  key={n.id}
-                  className={`p-4 rounded-2xl border text-xs text-right space-y-1 ${
-                    n.type === 'absence'
-                      ? 'bg-rose-50/60 border-rose-200'
-                      : n.type === 'presence'
-                      ? 'bg-emerald-50/60 border-emerald-200'
-                      : n.type === 'departure'
-                      ? 'bg-indigo-50/60 border-indigo-200'
-                      : n.type === 'tutoring'
-                      ? 'bg-amber-50/60 border-amber-200'
-                      : 'bg-slate-50 border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between font-bold text-slate-900">
-                    <span className="flex items-center gap-1.5">
-                      {n.type === 'absence' && <span className="w-2 h-2 rounded-full bg-rose-600" />}
-                      {n.type === 'presence' && <span className="w-2 h-2 rounded-full bg-emerald-600" />}
-                      {n.type === 'departure' && <span className="w-2 h-2 rounded-full bg-indigo-600" />}
-                      {n.type === 'tutoring' && <span className="w-2 h-2 rounded-full bg-amber-600" />}
-                      {n.title}
-                    </span>
-                    <span className="text-[11px] text-slate-400 font-normal">
-                      {formatArabicDate(n.createdAt)}
-                    </span>
+              <>
+                {notifications.slice(0, visibleNotifsCount).map(n => (
+                  <div
+                    key={n.id}
+                    className={`p-4 rounded-2xl border text-xs text-right space-y-1 ${
+                      n.type === 'absence'
+                        ? 'bg-rose-50/60 border-rose-200'
+                        : n.type === 'presence'
+                        ? 'bg-emerald-50/60 border-emerald-200'
+                        : n.type === 'departure'
+                        ? 'bg-indigo-50/60 border-indigo-200'
+                        : n.type === 'tutoring'
+                        ? 'bg-amber-50/60 border-amber-200'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-bold text-slate-900">
+                      <span className="flex items-center gap-1.5">
+                        {n.type === 'absence' && <span className="w-2 h-2 rounded-full bg-rose-600" />}
+                        {n.type === 'presence' && <span className="w-2 h-2 rounded-full bg-emerald-600" />}
+                        {n.type === 'departure' && <span className="w-2 h-2 rounded-full bg-indigo-600" />}
+                        {n.type === 'tutoring' && <span className="w-2 h-2 rounded-full bg-amber-600" />}
+                        {n.title}
+                      </span>
+                      <span className="text-[11px] text-slate-400 font-normal">
+                        {formatArabicDate(n.createdAt)}
+                      </span>
+                    </div>
+                    <p className="text-slate-700 leading-relaxed">{n.body}</p>
                   </div>
-                  <p className="text-slate-700 leading-relaxed">{n.body}</p>
-                </div>
-              ))
+                ))}
+                {hasMoreNotifs && (
+                  <div ref={notifsSentinelRef} className="py-2 text-center text-xs text-slate-400">
+                    جاري عرض باقي الإشعارات...
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -560,7 +676,7 @@ export const ParentDashboard: React.FC<Props> = ({
             }`}
           >
             <Bell className="w-5 h-5" />
-            {notifications.some(n => !n.isRead) && (
+            {hasUnreadNotifications && (
               <span className="w-2 h-2 rounded-full bg-rose-600 absolute -top-0.5 right-2" />
             )}
             <span>الإشعارات</span>
