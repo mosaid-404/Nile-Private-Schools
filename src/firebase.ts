@@ -4,6 +4,7 @@ import {
   initializeFirestore,
   persistentLocalCache,
   persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDocFromServer,
   Firestore
@@ -20,12 +21,23 @@ try {
       localCache: persistentLocalCache({
         tabManager: persistentMultipleTabManager()
       }),
-      experimentalAutoDetectLongPolling: true
+      experimentalForceLongPolling: true
     },
     firebaseConfig.firestoreDatabaseId
   );
 } catch {
-  dbInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  try {
+    dbInstance = initializeFirestore(
+      app,
+      {
+        localCache: memoryLocalCache(),
+        experimentalForceLongPolling: true
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    dbInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
 }
 
 export const db = dbInstance;
@@ -38,6 +50,7 @@ function isNetworkUnavailableError(error: unknown): boolean {
     code === 'unavailable' ||
     msg.includes('the client is offline') ||
     msg.includes('failed to get document') ||
+    msg.includes('could not reach cloud firestore backend') ||
     msg.includes('network')
   );
 }
@@ -62,4 +75,3 @@ async function testConnection(retried = false): Promise<void> {
 }
 
 void testConnection();
-

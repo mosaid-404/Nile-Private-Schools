@@ -336,21 +336,20 @@ class StorageService {
     try {
       await this.hydrateFromIndexedDB();
       const storeCol = collection(db, 'nps_store');
-      let serverSnap;
       const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+      if (!isOnline) {
+        return;
+      }
 
-      if (isOnline) {
-        try {
-          serverSnap = await getDocsFromServer(storeCol);
-        } catch (err) {
-          if (isFirestoreOfflineError(err)) {
-            serverSnap = await getDocs(storeCol);
-          } else {
-            throw err;
-          }
+      let serverSnap;
+      try {
+        serverSnap = await getDocsFromServer(storeCol);
+      } catch (err) {
+        if (isFirestoreOfflineError(err)) {
+          serverSnap = await getDocs(storeCol);
+        } else {
+          throw err;
         }
-      } else {
-        serverSnap = await getDocs(storeCol);
       }
 
       if (!serverSnap.empty) {
@@ -420,7 +419,7 @@ class StorageService {
     }
   }
 
-  public waitForInitialCloudSync(timeoutMs = 5000): Promise<void> {
+  public waitForInitialCloudSync(timeoutMs = 8000): Promise<void> {
     if (!this.initialSyncPromise) {
       this.initialSyncPromise = (async () => {
         await this.hydrateFromIndexedDB();
@@ -435,12 +434,15 @@ class StorageService {
   }
 
   public startCloudSync(): () => void {
-    // Ensure initial hydration starts if not already triggered
-    void this.waitForInitialCloudSync();
+    let disposed = false;
+    let unsubscribe: (() => void) | null = null;
 
-    const unsubscribe = onSnapshot(
-      collection(db, 'nps_store'),
-      (snapshot) => {
+    // Sequence onSnapshot AFTER initial cloud sync to prevent simultaneous 2x collection download congestion
+    void this.waitForInitialCloudSync().then(() => {
+      if (disposed) return;
+      unsubscribe = onSnapshot(
+        collection(db, 'nps_store'),
+        (snapshot) => {
         // NEVER overwrite Firestore when snapshot is empty (prevents race/cache wipes)
         if (snapshot.empty) {
           return;
@@ -532,10 +534,11 @@ class StorageService {
           window.dispatchEvent(new Event('nps_settings_updated'));
         }
       },
-      (error) => {
-        logFirestoreError(error, OperationType.GET, 'nps_store');
-      }
-    );
+        (error) => {
+          logFirestoreError(error, OperationType.GET, 'nps_store');
+        }
+      );
+    });
 
     const handleOnline = () => {
       void this.hydrateFromCloudServer();
@@ -543,7 +546,10 @@ class StorageService {
     window.addEventListener('online', handleOnline);
 
     return () => {
-      unsubscribe();
+      disposed = true;
+      if (unsubscribe) {
+        unsubscribe();
+      }
       window.removeEventListener('online', handleOnline);
     };
   }

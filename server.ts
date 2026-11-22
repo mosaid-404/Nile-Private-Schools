@@ -85,7 +85,7 @@ let db: ReturnType<typeof getFirestore>;
 try {
   db = initializeFirestore(
     fbApp,
-    { experimentalAutoDetectLongPolling: true },
+    { experimentalForceLongPolling: true },
     databaseId
   );
 } catch {
@@ -171,10 +171,33 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 async function readStoreValue<T>(key: string, fallback: T): Promise<T> {
   try {
-    const snap = await withTimeout(getDoc(doc(db, 'nps_store', key)), 3500, `read:${key}`);
+    const snap = await withTimeout(getDoc(doc(db, 'nps_store', key)), 8000, `read:${key}`);
     if (snap.exists()) {
       const val = snap.data()?.value;
       if (typeof val === 'string') {
+        const CHUNK_PREFIX = '__NPS_CHUNKED_V1__:';
+        if (val.startsWith(CHUNK_PREFIX)) {
+          const count = parseInt(val.slice(CHUNK_PREFIX.length), 10);
+          if (!isNaN(count) && count > 0) {
+            const chunkSnaps = await withTimeout(
+              Promise.all(
+                Array.from({ length: count }, (_, idx) =>
+                  getDoc(doc(db, 'nps_store', `${key}__chunk_${idx}`))
+                )
+              ),
+              8000,
+              `readChunks:${key}`
+            );
+            const parts: string[] = [];
+            for (const cs of chunkSnaps) {
+              const part = cs.exists() ? cs.data()?.value : undefined;
+              if (typeof part !== 'string') return fallback;
+              parts.push(part);
+            }
+            return JSON.parse(parts.join('')) as T;
+          }
+          return fallback;
+        }
         return JSON.parse(val) as T;
       }
     }
@@ -191,7 +214,7 @@ async function writeStoreValue<T>(key: string, data: T): Promise<void> {
         value: JSON.stringify(data),
         updatedAt: new Date().toISOString()
       }),
-      3500,
+      8000,
       `write:${key}`
     );
   } catch (err) {
